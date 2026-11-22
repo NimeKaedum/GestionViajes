@@ -14,6 +14,420 @@ import time
 ##############################Funciones version 15###################################################################################################
 ##############################Funciones version 15###################################################################################################
 
+def detectar_subtipo_monitoreo(data):
+    """
+    Detecta si el Excel de monitoreo es formato viejo o nuevo.
+    
+    Formato viejo: "Reporte Monitoreo" en A3 (celda[2][0])
+    Formato nuevo: "Reporte de monitoreo" en D1 (celda[0][3])
+    
+    Retorna: 'viejo', 'nuevo', o None si no se puede determinar
+    """
+    try:
+        # Verificar formato nuevo (D1 = fila 0, columna 3)
+        if len(data) > 0 and len(data[0]) > 3:
+            celda_d1 = str(data[0][3]).strip().lower()
+            if 'reporte de monitoreo' in celda_d1:
+                return 'nuevo'
+        
+        # Verificar formato viejo (A3 = fila 2, columna 0)
+        if len(data) > 2:
+            celda_a3 = str(data[2][0]).strip().lower()
+            if 'reporte monitoreo' in celda_a3:
+                return 'viejo'
+        
+        return None
+    except:
+        return None
+
+def detectar_subtipo_apertura_cierre(data):
+    """
+    Detecta si el Excel de apertura/cierre es formato viejo o nuevo.
+    
+    Formato viejo: "Reporte Apertura/Cierre Viajes" en A3 (celda[2][0])
+    Formato nuevo: "Reporte de apertura y cierre de viajes" en D1 (celda[0][3])
+    
+    Retorna: 'viejo', 'nuevo', o None si no se puede determinar
+    """
+    try:
+        # Verificar formato nuevo (D1 = fila 0, columna 3)
+        if len(data) > 0 and len(data[0]) > 3:
+            celda_d1 = str(data[0][3]).strip().lower()
+            if 'reporte de apertura y cierre' in celda_d1:
+                return 'nuevo'
+        
+        # Verificar formato viejo (A3 = fila 2, columna 0)
+        if len(data) > 2:
+            celda_a3 = str(data[2][0]).strip().lower()
+            if 'apertura/cierre' in celda_a3 or 'apertura cierre' in celda_a3:
+                return 'viejo'
+        
+        return None
+    except:
+        return None
+
+def estandarizar_monitoreo(data, subtipo, verbose=False):
+    """
+    Convierte el 'monitoreo nuevo' a formato donde SOLO las fuentes 16 y 18
+    quedan como strings formateados '%m/%d/%y %I:%M:%S %p' cuando sea posible.
+    Las demás columnas se copian tal cual (no se parsean).
+    """
+    if subtipo == 'viejo':
+        return data
+    if subtipo != 'nuevo':
+        if verbose:
+            print("⚠️ Subtipo desconocido, retornando sin cambios")
+        return data
+
+    mapeo_columnas = {0:0, 5:3, 8:6, 10:8, 16:14, 18:16}
+    parse_sources = {16, 18}  # solo estos índices fuente se normalizan a string
+
+    max_dest = max(mapeo_columnas.values())
+    fila_len = max_dest + 4  # p.ej. 20
+
+    salida = []
+    # Copiar filas previas al header nuevo (0..2)
+    for i in range(min(3, len(data))):
+        salida.append(list(data[i]))
+
+    for fila_idx in range(3, len(data)):
+        fila_original = data[fila_idx]
+        if verbose:
+            print(f"\n[ESTANDARIZACIÓN] fila {fila_idx} (len={len(fila_original)})")
+
+        valores_fuente = {}
+        for src_idx in sorted(mapeo_columnas.keys()):
+            raw = fila_original[src_idx] if src_idx < len(fila_original) else None
+
+            # Solo normalizamos/formateamos 16 y 18:
+            if src_idx in parse_sources:
+                dt_obj = None
+                # Si ya es pandas.Timestamp -> pydatetime
+                if isinstance(raw, pd.Timestamp):
+                    dt_obj = raw.to_pydatetime()
+                # Si es objeto datetime
+                elif isinstance(raw, datetime):
+                    dt_obj = raw
+                # Si es string, intentar parsear con pandas (flexible)
+                elif isinstance(raw, str):
+                    parsed = pd.to_datetime(raw, errors='coerce', infer_datetime_format=True)
+                    if not pd.isna(parsed):
+                        dt_obj = parsed.to_pydatetime()
+                # Si pudimos obtener datetime, lo convertimos al string esperado
+                if dt_obj is not None:
+                    # Formato objetivo: MM/DD/AA HH:MM:SS AM/PM
+                    valores_fuente[src_idx] = dt_obj.strftime('%m/%d/%y %I:%M:%S %p')
+                    if verbose:
+                        print(f"  fuente {src_idx}: {repr(raw)} -> formateado: {valores_fuente[src_idx]}")
+                else:
+                    # No pudo parsearse: dejar tal cual (o usar ''/None si lo prefieres)
+                    valores_fuente[src_idx] = raw
+                    if verbose:
+                        print(f"  fuente {src_idx}: {repr(raw)} -> NO parseable, se deja tal cual")
+            else:
+                # No tocar otras columnas (copiar tal cual)
+                valores_fuente[src_idx] = raw
+                if verbose:
+                    print(f"  fuente {src_idx}: {repr(raw)} (no parseado)")
+
+        # Crear fila nueva limpia y sólo rellenar destinos
+        fila_nueva = [''] * fila_len
+        for src_idx, dest_idx in mapeo_columnas.items():
+            fila_nueva[dest_idx] = valores_fuente[src_idx]
+
+        salida.append(fila_nueva)
+
+    # Asegurar al menos 5 filas (mismo comportamiento previo)
+    while len(salida) < 5:
+        salida.append([''] * fila_len)
+
+    if verbose:
+        print(f"[ESTANDARIZACIÓN] filas en salida: {len(salida)}")
+    return salida
+
+def estandarizar_apertura_cierre(data, subtipo):
+    """
+    Estandariza Excel de apertura/cierre al formato viejo.
+    
+    Si ya es formato viejo, retorna sin cambios.
+    Si es formato nuevo, reorganiza filas (columnas son iguales).
+    
+    Formato viejo (objetivo):
+    - Header en fila 5 (índice 4)
+    - Columnas: ID=1, ClaveRuta=7, TipoEnsamble=11, Ensamble=12
+    
+    Formato nuevo (origen):
+    - Header en fila 4 (índice 3)
+    - Columnas: ID=1, ClaveRuta=7, TipoEnsamble=11, Ensamble=12 (iguales)
+    
+    Retorna: data estandarizada
+    """
+    if subtipo == 'viejo':
+        return data
+    
+    if subtipo != 'nuevo':
+        print("⚠️ Subtipo de apertura/cierre desconocido, retornando sin cambios")
+        return data
+    
+    print("[ESTANDARIZACIÓN] Convirtiendo apertura/cierre nuevo a formato estándar...")
+    
+    # Para apertura/cierre, las columnas son iguales, solo hay que ajustar filas
+    data_estandarizada = []
+    
+    # Copiar primeras 4 filas
+    for i in range(min(4, len(data))):
+        data_estandarizada.append(data[i][:])
+    
+    # Agregar fila vacía extra para que el header quede en fila 5 (índice 4)
+    data_estandarizada.append([''] * (len(data[0]) if len(data) > 0 else 20))
+    
+    # Copiar resto de datos (desde fila 3 del nuevo, que es el header)
+    for fila_idx in range(3, len(data)):
+        data_estandarizada.append(data[fila_idx][:])
+    
+    print(f"[ESTANDARIZACIÓN] Apertura/cierre convertido: {len(data_estandarizada)} filas")
+    return data_estandarizada
+
+def detectar_viajes_dobles(db_manager):
+    """
+    Detecta viajes del mismo tracto con diferencia de menos de 5 minutos entre fechas de inicio.
+    El segundo viaje (por fecha_inicio) se marca como 'DOBLE'.
+    
+    Criterio:
+    - Mismo tracto
+    - Diferencia entre fecha_inicio2 y fecha_inicio1 < 5 minutos
+    
+    Parámetros:
+    - db_manager: instancia de DatabaseManager
+    
+    Retorna: número de viajes marcados como DOBLE
+    """
+    print("\n[VERIFICACIÓN] Detectando viajes dobles (< 5 min)...")
+    
+    # Agrupar viajes por tracto con optimización
+    viajes_por_tracto = {}
+    
+    for id_viaje, datos_viaje in db_manager.data['viajes'].items():
+        tracto = datos_viaje.get('tracto')
+        if not tracto:
+            continue
+        
+        # Parsear fechas
+        try:
+            fecha_inicio = pd.to_datetime(datos_viaje['fecha_inicio'])
+            fecha_final = pd.to_datetime(datos_viaje['fecha_final'])
+        except:
+            continue
+        
+        if tracto not in viajes_por_tracto:
+            viajes_por_tracto[tracto] = []
+        
+        viajes_por_tracto[tracto].append({
+            'id_viaje': id_viaje,
+            'fecha_inicio': fecha_inicio,
+            'fecha_final': fecha_final,
+            'datos': datos_viaje
+        })
+    
+    # Detectar viajes con diferencia < 5 minutos
+    viajes_dobles = []
+    umbral = timedelta(minutes=5)
+    
+    for tracto, viajes in viajes_por_tracto.items():
+        # Ordenar por fecha_inicio
+        viajes.sort(key=lambda x: x['fecha_inicio'])
+        
+        # Comparar viajes consecutivos (optimización)
+        for i in range(len(viajes) - 1):
+            viaje1 = viajes[i]
+            viaje2 = viajes[i + 1]
+            
+            # Si alguno ya está marcado como DOBLE o IRREAL, saltar
+            if 'DOBLE' in viaje1['datos'].get('advertencias', []) or \
+               'IRREAL' in viaje1['datos'].get('advertencias', []):
+                continue
+            
+            if 'DOBLE' in viaje2['datos'].get('advertencias', []) or \
+               'IRREAL' in viaje2['datos'].get('advertencias', []):
+                continue
+            
+            # Calcular diferencia de tiempo entre fechas de inicio
+            diferencia = viaje2['fecha_inicio'] - viaje1['fecha_inicio']
+            
+            # Si la diferencia es menor a 5 minutos, marcar el segundo como DOBLE
+            if diferencia < umbral:
+                if 'advertencias' not in viaje2['datos']:
+                    viaje2['datos']['advertencias'] = []
+                
+                if 'DOBLE' not in viaje2['datos']['advertencias']:
+                    viaje2['datos']['advertencias'].append('DOBLE')
+                    viajes_dobles.append(viaje2['id_viaje'])
+                    
+                    print(f"  ⚠️  Viaje DOBLE detectado:")
+                    print(f"     Tracto: {tracto}")
+                    print(f"     Viaje 1: {viaje1['id_viaje']} (inicio: {viaje1['fecha_inicio']})")
+                    print(f"     Viaje 2: {viaje2['id_viaje']} (inicio: {viaje2['fecha_inicio']})")
+                    print(f"     Diferencia: {diferencia.total_seconds()/60:.1f} minutos")
+    
+    if viajes_dobles:
+        print(f"\n[VERIFICACIÓN] {len(viajes_dobles)} viaje(s) marcado(s) como DOBLE")
+    else:
+        print("[VERIFICACIÓN] No se detectaron viajes dobles")
+    
+    return len(viajes_dobles)
+
+def detectar_estados_analisis(db_manager):
+    """
+    Detecta viajes que requieren análisis basándose en la cantidad de casetas fuera.
+    
+    Criterios:
+    - Solo se marca si #casetas_fuera > #casetas_normales
+    - Analizar 1: diferencia <= 2 (1-2 casetas fuera adicionales)
+    - Analizar 2: diferencia <= 10 (3-10 casetas fuera adicionales)
+    - Analizar 3: diferencia > 10 (más de 10 casetas fuera adicionales)
+    
+    Estados mutuamente excluyentes.
+    """
+    print("\n[VERIFICACIÓN] Detectando viajes para análisis...")
+    
+    # Contar casetas por viaje
+    conteo_casetas = {}
+    
+    for rel in db_manager.data['relaciones']:
+        id_viaje = rel['id_viaje']
+        is_fuera = rel.get('is_fuera', False)
+        
+        if id_viaje not in conteo_casetas:
+            conteo_casetas[id_viaje] = {'normales': 0, 'fuera': 0}
+        
+        if is_fuera:
+            conteo_casetas[id_viaje]['fuera'] += 1
+        else:
+            conteo_casetas[id_viaje]['normales'] += 1
+    
+    # Detectar y marcar estados
+    analizar_1 = 0
+    analizar_2 = 0
+    analizar_3 = 0
+    
+    for id_viaje, conteo in conteo_casetas.items():
+        normales = conteo['normales']
+        fuera = conteo['fuera']
+        
+        # Solo marcar si hay más casetas fuera que normales
+        if fuera <= normales:
+            continue
+        
+        diferencia = fuera - normales
+        
+        # Determinar estado
+        if diferencia <= 2:
+            estado = 'ANALIZAR 1'
+            analizar_1 += 1
+        elif diferencia <= 10:
+            estado = 'ANALIZAR 2'
+            analizar_2 += 1
+        else:
+            estado = 'ANALIZAR 3'
+            analizar_3 += 1
+        
+        # Añadir estado al viaje
+        datos_viaje = db_manager.data['viajes'][id_viaje]
+        
+        if 'advertencias' not in datos_viaje:
+            datos_viaje['advertencias'] = []
+        
+        # Remover estados de análisis previos (son mutuamente excluyentes)
+        datos_viaje['advertencias'] = [
+            adv for adv in datos_viaje['advertencias'] 
+            if not adv.startswith('ANALIZAR')
+        ]
+        
+        # Añadir nuevo estado
+        if estado not in datos_viaje['advertencias']:
+            datos_viaje['advertencias'].append(estado)
+    
+    total_marcados = analizar_1 + analizar_2 + analizar_3
+    
+    if total_marcados > 0:
+        print(f"\n[VERIFICACIÓN] Viajes marcados para análisis: {total_marcados}")
+        print(f"  - ANALIZAR 1 (diferencia 1-2): {analizar_1}")
+        print(f"  - ANALIZAR 2 (diferencia 3-10): {analizar_2}")
+        print(f"  - ANALIZAR 3 (diferencia >10): {analizar_3}")
+    else:
+        print("[VERIFICACIÓN] No se detectaron viajes para análisis")
+    
+    return total_marcados
+
+def marcar_viajes_finales(db_manager):
+    """
+    Marca el último viaje de cada tracto con el estado 'FINAL'.
+    
+    Criterios:
+    - Es el último viaje por fecha_final del tracto
+    - No puede ser un viaje IRREAL o DOBLE
+    - Solo un viaje por tracto puede tener este estado
+    """
+    print("\n[VERIFICACIÓN] Marcando últimos viajes por tracto...")
+    
+    # Agrupar viajes válidos por tracto
+    viajes_por_tracto = {}
+    
+    for id_viaje, datos_viaje in db_manager.data['viajes'].items():
+        tracto = datos_viaje.get('tracto')
+        if not tracto:
+            continue
+        
+        # Ignorar viajes IRREAL o DOBLE
+        advertencias = datos_viaje.get('advertencias', [])
+        if 'IRREAL' in advertencias or 'DOBLE' in advertencias:
+            continue
+        
+        # Parsear fecha final
+        try:
+            fecha_final = pd.to_datetime(datos_viaje['fecha_final'])
+        except:
+            continue
+        
+        if tracto not in viajes_por_tracto:
+            viajes_por_tracto[tracto] = []
+        
+        viajes_por_tracto[tracto].append({
+            'id_viaje': id_viaje,
+            'fecha_final': fecha_final,
+            'datos': datos_viaje
+        })
+    
+    # Marcar el último viaje de cada tracto
+    viajes_marcados = 0
+    
+    for tracto, viajes in viajes_por_tracto.items():
+        if not viajes:
+            continue
+        
+        # Ordenar por fecha_final y obtener el último
+        viajes.sort(key=lambda v: v['fecha_final'])
+        ultimo_viaje = viajes[-1]
+        
+        # Remover estado FINAL previo de todos los viajes del tracto
+        for viaje in viajes:
+            viaje['datos']['advertencias'] = [
+                adv for adv in viaje['datos'].get('advertencias', [])
+                if adv != 'FINAL'
+            ]
+        
+        # Añadir estado FINAL al último
+        if 'advertencias' not in ultimo_viaje['datos']:
+            ultimo_viaje['datos']['advertencias'] = []
+        
+        if 'FINAL' not in ultimo_viaje['datos']['advertencias']:
+            ultimo_viaje['datos']['advertencias'].append('FINAL')
+            viajes_marcados += 1
+    
+    print(f"[VERIFICACIÓN] {viajes_marcados} viaje(s) marcado(s) como FINAL ({len(viajes_por_tracto)} tractos)")
+    
+    return viajes_marcados
+
 class IndicesCasetas:
     """
     Sistema de índices para búsqueda rápida de casetas.
@@ -2248,8 +2662,17 @@ def construir_base_datos_desde_excels(datamon, datacas, dataayc, datagastos,
     if dataadicional and len(dataadicional) > 1:
         print("[DB] Enriqueciendo viajes con gastos adicionales...")
         db_manager.enriquecer_viajes_desde_adicionales(dataadicional)
-    
-        # PASO 6.5: Verificar comisiones vs rutas
+
+    # NUEVO PASO 6.4: Marcar viajes dobles
+    detectar_viajes_dobles(db_manager)
+
+    # NUEVO PASO 6.5: Detectar estados de análisis
+    detectar_estados_analisis(db_manager)
+
+    # NUEVO PASO 6.6: Marcar últimos viajes por tracto
+    marcar_viajes_finales(db_manager)
+
+    # PASO 6.7: Verificar comisiones vs rutas
     # Solo si hay rutas cargadas en la base de datos
     if len(db_manager.data.get('rutas', {})) > 0:
         verificar_comisiones_vs_rutas(db_manager)
@@ -4111,6 +4534,16 @@ def detectar_tipo_excel(data):
     if any("Reporte Apertura/Cierre Viajes" in str(c) for row in data for c in row if c is not None):
         return 'cierre'
     
+    celda_d1 = str(data[0][3]).strip().lower() if len(data[0]) > 3 else ""
+
+    # Nuevo monitoreo: "Reporte de monitoreo" en D1
+    if 'reporte de monitoreo' in celda_d1:
+        return ('monitoreo')
+    
+    # Nuevo apertura/cierre: "Reporte de apertura y cierre de viajes" en D1
+    if 'reporte de apertura y cierre de viajes' in celda_d1:
+        return ('cierre')
+
     return None
 
 
