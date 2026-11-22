@@ -58,7 +58,9 @@ from core_viajes import (
     estandarizar_apertura_cierre,
     preparar_excel_gastos_adicionales,
     procesar_hojas_operadores,
-    merge_gastos_adicionales
+    merge_gastos_adicionales,
+    calcular_costo_diesel_viajes,
+    calcular_costo_diesel_de_viaje
 )
 
 def format_date_safe(dt):
@@ -285,6 +287,9 @@ class AplicacionViajes:
         # Área de drag & drop
         self.crear_zona_drop(main_frame)
         
+        # NUEVO: Sección de precio de diesel y rendimiento general
+        self.crear_seccion_diesel(main_frame)
+        
         # Lista de archivos
         self.crear_lista_archivos(main_frame)
         
@@ -295,6 +300,31 @@ class AplicacionViajes:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(0, weight=1)
+    
+    def crear_seccion_diesel(self, parent):
+        """
+        Crea la sección para capturar precio de diesel y rendimiento GENERAL.
+        
+        Solución temporal mientras no se cuenta con un excel que provea estos datos
+        por viaje: estos valores se aplican únicamente a los viajes que no tengan ya
+        un valor individual capturado (ver aplicar_precio_rendimiento_general).
+        """
+        diesel_frame = ttk.LabelFrame(parent, text="⛽ Diesel (valores generales)", padding="10")
+        diesel_frame.grid(row=3, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=10)
+        
+        ttk.Label(diesel_frame,
+                 text="Se aplican solo a los viajes que no tengan ya un valor propio capturado individualmente.",
+                 foreground='#666', font=('Arial', 8)).grid(row=0, column=0, columnspan=4, sticky=tk.W, pady=(0, 8))
+        
+        ttk.Label(diesel_frame, text="Precio de diesel ($/L):").grid(row=1, column=0, sticky=tk.W, padx=(0, 5))
+        self.var_precio_diesel_general = tk.StringVar()
+        entry_precio = ttk.Entry(diesel_frame, textvariable=self.var_precio_diesel_general, width=12)
+        entry_precio.grid(row=1, column=1, sticky=tk.W, padx=(0, 25))
+        
+        ttk.Label(diesel_frame, text="Rendimiento (km/L):").grid(row=1, column=2, sticky=tk.W, padx=(0, 5))
+        self.var_rendimiento_general = tk.StringVar()
+        entry_rendimiento = ttk.Entry(diesel_frame, textvariable=self.var_rendimiento_general, width=12)
+        entry_rendimiento.grid(row=1, column=3, sticky=tk.W)
     
     def crear_zona_drop(self, parent):
         """Crea zona para arrastrar archivos"""
@@ -327,7 +357,7 @@ class AplicacionViajes:
     def crear_lista_archivos(self, parent):
         """Crea lista de archivos cargados"""
         list_frame = ttk.LabelFrame(parent, text="Archivos Cargados", padding="10")
-        list_frame.grid(row=3, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=10)
+        list_frame.grid(row=4, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=10)
         
         columns = ('tipo', 'nombre', 'registros', 'estado')
         self.tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=8)
@@ -354,7 +384,7 @@ class AplicacionViajes:
     def crear_botones_accion(self, parent):
         """Crea botones de acción"""
         btn_frame = ttk.Frame(parent)
-        btn_frame.grid(row=4, column=0, columnspan=2, pady=10)
+        btn_frame.grid(row=5, column=0, columnspan=2, pady=10)
         
         btn_seleccionar = ttk.Button(btn_frame, text="📂 Seleccionar Archivos", 
                                      command=self.seleccionar_archivos)
@@ -376,7 +406,7 @@ class AplicacionViajes:
     def crear_consola(self, parent):
         """Crea área de consola/log"""
         console_frame = ttk.LabelFrame(parent, text="Consola", padding="5")
-        console_frame.grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=10)
+        console_frame.grid(row=6, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=10)
         
         self.console = tk.Text(console_frame, height=8, width=80, 
                               bg='#1e1e1e', fg='#00ff00', 
@@ -508,19 +538,22 @@ class AplicacionViajes:
                 hoja_gastos = pd.read_excel(ruta_archivo, sheet_name='GASTOS', header=None).values.tolist()
                 hoja_cierre35 = pd.read_excel(ruta_archivo, sheet_name='CIERRE 35', header=None).values.tolist()
                 
-                # NUEVO: Procesar hojas de operadores (hojas que inician con "O")
-                self.log("  Procesando hojas de operadores...")
-                modificaciones_comision = procesar_hojas_operadores(ruta_archivo)
+                # NUEVO: Capturar datos crudos de hojas de operadores (hojas que inician con "O").
+                # El cálculo de la distribución de comisiones (que depende de los viajes DOBLE)
+                # se realiza más adelante, dentro de construir_base_datos_desde_excels, una vez
+                # que los viajes ya están cargados y los DOBLE han sido detectados.
+                self.log("  Capturando hojas de operadores...")
+                hojas_operadores = procesar_hojas_operadores(ruta_archivo)
                 
                 nuevos_gastos = {
                     'GASTOS': hoja_gastos,
                     'CIERRE 35': hoja_cierre35
                 }
                 
-                # NUEVO: Añadir modificaciones de comisión si existen
-                if modificaciones_comision:
-                    nuevos_gastos['MODIFICACIONES_COMISION'] = modificaciones_comision
-                    self.log(f"  Comisiones modificadas: {len(modificaciones_comision)}")
+                # NUEVO: Añadir hojas de operadores si existen
+                if hojas_operadores:
+                    nuevos_gastos['HOJAS_OPERADORES'] = hojas_operadores
+                    self.log(f"  Hojas de operadores capturadas: {len(hojas_operadores)}")
                 
                 # ACTUALIZADO: Usar merge real
                 if self.datagastos is not None:
@@ -684,6 +717,22 @@ class AplicacionViajes:
             self.btn_continuar.config(state=tk.DISABLED)
             self.log("Archivos limpiados")
     
+    def _parsear_float_opcional(self, texto, nombre_campo):
+        """
+        Convierte un texto capturado por el usuario a float. Un texto vacío es válido
+        y retorna None (significa "no establecer este valor general").
+        Retorna: (valor_o_none, es_valido)
+        """
+        texto = (texto or '').strip().replace(',', '')
+        if not texto:
+            return None, True
+        try:
+            return float(texto), True
+        except ValueError:
+            messagebox.showerror("Valor inválido", 
+                                f"El valor de {nombre_campo} ('{texto}') no es un número válido.")
+            return None, False
+    
     def procesar_archivos(self):
         """Procesa archivos y construye/actualiza base de datos"""
         try:
@@ -693,6 +742,17 @@ class AplicacionViajes:
             else:
                 self.log("INICIANDO ACTUALIZACIÓN")
             self.log("="*50)
+            
+            # NUEVO: Parsear precio de diesel y rendimiento general capturados por el usuario
+            texto_precio = self.var_precio_diesel_general.get() if hasattr(self, 'var_precio_diesel_general') else ''
+            precio_diesel_general, precio_valido = self._parsear_float_opcional(texto_precio, "precio de diesel")
+            if not precio_valido:
+                return
+            
+            texto_rendimiento = self.var_rendimiento_general.get() if hasattr(self, 'var_rendimiento_general') else ''
+            rendimiento_general, rendimiento_valido = self._parsear_float_opcional(texto_rendimiento, "rendimiento")
+            if not rendimiento_valido:
+                return
             
             # Preparar casetas si hay cierre (para mapeo CT)
             if self.datacas and self.dataayc:
@@ -725,7 +785,9 @@ class AplicacionViajes:
                 cas_header_rows=1,
                 db_manager=self.db_manager,
                 is_update=is_update,
-                dataadicional=self.dataadicional if self.dataadicional else []
+                dataadicional=self.dataadicional if self.dataadicional else [],
+                precio_diesel_general=precio_diesel_general,
+                rendimiento_general=rendimiento_general
             )
             
             # Cargar/actualizar rutas si existen
@@ -761,7 +823,16 @@ class AplicacionViajes:
         # Crear ventana de consulta
         self.ventana_consulta = tk.Toplevel(self.root)
         self.ventana_consulta.title("Módulo de Consulta - Gestión de Viajes")
-        self.ventana_consulta.geometry("1400x900")
+        
+        # CORREGIDO: No exceder el tamaño real de la pantalla (evita que en
+        # resoluciones bajas, como 1366x768, la ventana pida más alto de lo que
+        # cabe y termine recortando contenido)
+        screen_w = self.ventana_consulta.winfo_screenwidth()
+        screen_h = self.ventana_consulta.winfo_screenheight()
+        ancho_ventana = min(1400, screen_w - 50)
+        alto_ventana = min(900, screen_h - 80)
+        self.ventana_consulta.geometry(f"{ancho_ventana}x{alto_ventana}")
+        self.ventana_consulta.minsize(900, 500)
         
         # Frame principal
         main_frame = ttk.Frame(self.ventana_consulta, padding="10")
@@ -770,14 +841,21 @@ class AplicacionViajes:
         # ==================== SECCIÓN DE FILTROS ====================
         self.crear_seccion_filtros(main_frame)
         
-        # ==================== SECCIÓN DE RESULTADOS ====================
-        self.crear_seccion_resultados(main_frame)
+        # CORREGIDO: Los botones y la barra de estado se empaquetan ANTES que la
+        # sección de resultados (y ambos anclados con side=tk.BOTTOM). Así su
+        # espacio siempre queda reservado en la parte inferior, sin importar la
+        # resolución de pantalla; es la sección de resultados (con expand=True)
+        # la que se ajusta al espacio restante, en vez de empujar a los botones
+        # fuera de la ventana en pantallas más pequeñas (p. ej. 1366x768).
+        
+        # ==================== BOTONES DE ACCIÓN ====================
+        self.crear_botones_principales(main_frame)
         
         # ==================== BARRA DE ESTADO ====================
         self.crear_barra_estado(main_frame)
         
-        # ==================== BOTONES DE ACCIÓN ====================
-        self.crear_botones_principales(main_frame)
+        # ==================== SECCIÓN DE RESULTADOS ====================
+        self.crear_seccion_resultados(main_frame)
         
         # Cargar datos iniciales (todos los viajes)
         #self.aplicar_filtros_consulta()
@@ -992,7 +1070,18 @@ class AplicacionViajes:
         self.filtro_valor['estado_analizar3'] = var_analizar3
         check_analizar3 = ttk.Checkbutton(estado_frame, text="ANALIZAR 3", 
                                         variable=var_analizar3)
-        check_analizar3.pack(side=tk.LEFT)
+        check_analizar3.pack(side=tk.LEFT, padx=(0, 15))
+        
+        # Separador visual antes del filtro de Dobles (funciona distinto: excluye en vez de incluir)
+        ttk.Separator(estado_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=(0, 15))
+        
+        # NUEVO: Checkbox EXCLUIR DOBLES - activo por defecto, oculta de la vista los
+        # viajes marcados como DOBLE en lugar de filtrar mostrando solo esos viajes
+        var_excluir_doble = tk.BooleanVar(value=True)
+        self.filtro_valor['estado_excluir_doble'] = var_excluir_doble
+        check_excluir_doble = ttk.Checkbutton(estado_frame, text="Excluir Dobles", 
+                                        variable=var_excluir_doble)
+        check_excluir_doble.pack(side=tk.LEFT)
         
         # ==================== BOTONES DE ACCIÓN ====================
         btn_frame = ttk.Frame(filtros_frame)
@@ -1146,11 +1235,56 @@ class AplicacionViajes:
                 viaje = self.datos_actuales[row]
                 self.abrir_ventana_detalles(viaje)
 
+    def obtener_viaje_enriquecido(self, id_viaje):
+        """
+        Obtiene los datos completos (enriquecidos con estadísticas de casetas) de un
+        viaje a partir de su ID.
+        
+        Primero busca en los datos actualmente mostrados (self.datos_actuales) para
+        reutilizar información ya calculada; si no se encuentra ahí (por ejemplo, el
+        viaje quedó fuera de los filtros actuales), lo obtiene y enriquece directamente
+        desde la base de datos.
+        
+        Retorna: dict con los datos del viaje enriquecido, o None si no existe.
+        """
+        if hasattr(self, 'datos_actuales') and self.datos_actuales:
+            for v in self.datos_actuales:
+                if v.get('id_viaje') == id_viaje:
+                    return v
+        
+        datos_viaje = self.db_manager.data['viajes'].get(id_viaje)
+        if not datos_viaje:
+            return None
+        
+        from core_viajes import enriquecer_viajes_con_casetas
+        viaje_con_id = {'id_viaje': id_viaje, **datos_viaje}
+        viajes_enriquecidos = enriquecer_viajes_con_casetas(self.db_manager, [viaje_con_id])
+        
+        return viajes_enriquecidos[0] if viajes_enriquecidos else None
+
     def abrir_ventana_detalles(self, viaje):
         """
              Abre una ventana con los detalles completos de un viaje.
         Muestra: datos del viaje, datos de ruta (si existe), casetas dentro y fuera, gastos.
+        
+        NOTA: Si el viaje recibido está marcado como DOBLE, en su lugar se abren los
+        detalles del viaje ORIGINAL al que está relacionado.
         """
+        # NUEVO: Si el viaje es DOBLE, redirigir a los detalles del viaje original relacionado
+        if 'DOBLE' in viaje.get('advertencias', []):
+            id_original = viaje.get('doble_relacionado_id')
+            viaje_original = self.obtener_viaje_enriquecido(id_original) if id_original else None
+            
+            if viaje_original:
+                viaje = viaje_original
+            else:
+                messagebox.showwarning(
+                    "Viaje Doble",
+                    f"Este viaje está marcado como DOBLE, pero no se pudo encontrar "
+                    f"el viaje original relacionado ({id_original or 'desconocido'})."
+                )
+                return
+        
         id_viaje = viaje.get('id_viaje', 'N/A')
         
         # Crear ventana Toplevel
@@ -1196,7 +1330,7 @@ class AplicacionViajes:
         titulo.pack(pady=(0, 20))
         
         # ==================== SECCIÓN 1: DATOS DEL VIAJE ====================
-        self.crear_seccion_datos_viaje(scrollable_frame, viaje)
+        self.crear_seccion_datos_viaje(scrollable_frame, viaje, ventana)
         
         # ==================== SECCIÓN 2: DATOS DE RUTA (si existe) ====================
         id_ruta = viaje.get('id_ruta')
@@ -1222,7 +1356,7 @@ class AplicacionViajes:
                             command=al_cerrar)
         btn_cerrar.pack(pady=20)
     
-    def crear_seccion_datos_viaje(self, parent, viaje):
+    def crear_seccion_datos_viaje(self, parent, viaje, ventana=None):
         """Crea sección de datos del viaje en tksheet"""
         frame = ttk.LabelFrame(parent, text="Datos del Viaje", padding="10")
         frame.pack(fill=tk.BOTH, pady=(0, 15))
@@ -1231,9 +1365,22 @@ class AplicacionViajes:
         gastos_adicionales_total = viaje.get('gastos_adicionales_total', 0.0)
         comision_original = viaje.get('comision', 0.0)
         comision_ajustada = viaje.get('comision_ajustada')
+        kilometros = viaje.get('kilometros')  # NUEVO
+        precio_diesel = viaje.get('precio_diesel')  # NUEVO
+        rendimiento = viaje.get('rendimiento')  # NUEVO
+        costo_diesel = viaje.get('costo_diesel')  # NUEVO
+        
+        # NUEVO: Si este viaje es el "original" de un viaje DOBLE relacionado, se muestra
+        # como primer dato el ID del viaje DOBLE relacionado
+        doble_relacionado = viaje.get('doble_origen_de')
         
         # Preparar datos para sheet (formato: Campo | Valor)
-        datos = [
+        datos = []
+        
+        if doble_relacionado:
+            datos.append(["ID Viaje Doble Relacionado", doble_relacionado])
+        
+        datos.extend([
             ["ID Viaje", viaje.get('id_viaje', '')],
             ["Fecha Inicio", format_date_safe(viaje.get('fecha_inicio'))],
             ["Fecha Final", format_date_safe(viaje.get('fecha_final'))],
@@ -1244,6 +1391,10 @@ class AplicacionViajes:
             ["Frontal", viaje.get('frontal', '')],
             ["Dolly", viaje.get('dolly', '')],
             ["Trasero", viaje.get('trasero', '')],
+            ["Kilómetros", f"{kilometros:,.2f}" if kilometros is not None else ''],
+            ["Precio Diesel ($/L)", f"${precio_diesel:,.2f}" if precio_diesel is not None else ''],  # NUEVO
+            ["Rendimiento (km/L)", f"{rendimiento:,.2f}" if rendimiento is not None else ''],  # NUEVO
+            ["Costo Diesel", f"${costo_diesel:,.2f}" if costo_diesel is not None else 'N/A'],  # NUEVO
             ["Clave", viaje.get('clave', '')],
             ["ID Ruta", viaje.get('id_ruta', '')],
             ["", ""],  # Separador
@@ -1260,15 +1411,113 @@ class AplicacionViajes:
             ["", ""],  # Separador
             ["Estado", ', '.join(viaje.get('advertencias', [])) or 'OK'],
             ["Origen Datos", viaje.get('origen', '')],
-        ]
+        ])
         
         sheet = Sheet(frame, headers=["Campo", "Valor"], data=datos,
-                    width=1100, height=450, enable_edit=False)  # MODIFICADO: height 400 → 450 para más filas
+                    width=1100, height=470, enable_edit=False)  # MODIFICADO: height ajustado para las nuevas filas
         sheet.pack(fill=tk.BOTH, expand=True)
         
         sheet.enable_bindings(("single_select", "copy"))
         sheet.column_width(0, 200)
         sheet.column_width(1, 800)
+        
+        # ==================== NUEVO: Actualizar Kilómetros / Precio Diesel / Rendimiento ====================
+        # Estos 3 valores suelen venir vacíos o en 0.00 (aún no hay excel que los provea
+        # por viaje), por lo que se ofrece un control simple para corregirlos directamente.
+        # Los tres se guardan y recalculan juntos con un solo botón.
+        km_frame = ttk.Frame(frame)
+        km_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        ttk.Label(km_frame, text="Kilómetros:").pack(side=tk.LEFT, padx=(0, 5))
+        valor_inicial_km = f"{kilometros:.2f}" if kilometros is not None else ''
+        var_km = tk.StringVar(value=valor_inicial_km)
+        entry_km = ttk.Entry(km_frame, textvariable=var_km, width=12)
+        entry_km.pack(side=tk.LEFT, padx=(0, 15))
+        
+        ttk.Label(km_frame, text="Precio Diesel ($/L):").pack(side=tk.LEFT, padx=(0, 5))
+        valor_inicial_precio = f"{precio_diesel:.2f}" if precio_diesel is not None else ''
+        var_precio = tk.StringVar(value=valor_inicial_precio)
+        entry_precio = ttk.Entry(km_frame, textvariable=var_precio, width=12)
+        entry_precio.pack(side=tk.LEFT, padx=(0, 15))
+        
+        ttk.Label(km_frame, text="Rendimiento (km/L):").pack(side=tk.LEFT, padx=(0, 5))
+        valor_inicial_rendimiento = f"{rendimiento:.2f}" if rendimiento is not None else ''
+        var_rendimiento = tk.StringVar(value=valor_inicial_rendimiento)
+        entry_rendimiento = ttk.Entry(km_frame, textvariable=var_rendimiento, width=12)
+        entry_rendimiento.pack(side=tk.LEFT, padx=(0, 15))
+        
+        def parsear_campo(var, nombre_campo):
+            """Convierte el texto del campo a float, o None si está vacío.
+            Retorna (valor, es_valido)."""
+            texto = var.get().strip().replace(',', '')
+            if not texto:
+                return None, True
+            try:
+                return float(texto), True
+            except ValueError:
+                messagebox.showerror(f"{nombre_campo} inválido",
+                                    f"Ingresa un número válido para {nombre_campo} (ej. 350.5) "
+                                    f"o deja el campo vacío.")
+                return None, False
+        
+        def guardar_datos_diesel():
+            id_viaje_actual = viaje.get('id_viaje')
+            
+            if id_viaje_actual not in self.db_manager.data['viajes']:
+                messagebox.showerror("Error", "No se pudo encontrar el viaje en la base de datos.")
+                return
+            
+            nuevo_km, km_valido = parsear_campo(var_km, "Kilómetros")
+            if not km_valido:
+                return
+            
+            nuevo_precio, precio_valido = parsear_campo(var_precio, "Precio Diesel")
+            if not precio_valido:
+                return
+            
+            nuevo_rendimiento, rendimiento_valido = parsear_campo(var_rendimiento, "Rendimiento")
+            if not rendimiento_valido:
+                return
+            
+            # Actualizar los 3 valores en la base de datos
+            viaje_db = self.db_manager.data['viajes'][id_viaje_actual]
+            viaje_db['kilometros'] = nuevo_km
+            viaje_db['precio_diesel'] = nuevo_precio
+            viaje_db['rendimiento'] = nuevo_rendimiento
+            
+            # NUEVO: Recalcular el costo de diesel de este viaje (solo este, sin
+            # recorrer toda la base de datos)
+            calcular_costo_diesel_de_viaje(viaje_db)
+            
+            self.db_manager.guardar_datos()
+            
+            # Mantener sincronizados los datos ya cargados en la tabla principal, ya que
+            # enriquecer_viajes_con_casetas trabaja sobre copias independientes del viaje
+            if hasattr(self, 'datos_actuales') and self.datos_actuales:
+                for v in self.datos_actuales:
+                    if v.get('id_viaje') == id_viaje_actual:
+                        v['kilometros'] = viaje_db['kilometros']
+                        v['precio_diesel'] = viaje_db['precio_diesel']
+                        v['rendimiento'] = viaje_db['rendimiento']
+                        v['costo_diesel'] = viaje_db['costo_diesel']
+                        break
+            
+            messagebox.showinfo("Datos actualizados", 
+                               f"Kilómetros, precio de diesel y rendimiento actualizados "
+                               f"para el viaje {id_viaje_actual}.")
+            
+            # Reiniciar la ventana de detalles completa para reflejar los nuevos valores
+            if ventana is not None:
+                if ventana in self.ventanas_detalles:
+                    self.ventanas_detalles.remove(ventana)
+                ventana.destroy()
+                
+                viaje_actualizado = self.obtener_viaje_enriquecido(id_viaje_actual)
+                if viaje_actualizado:
+                    self.abrir_ventana_detalles(viaje_actualizado)
+        
+        btn_guardar_diesel = ttk.Button(km_frame, text="💾 Actualizar", command=guardar_datos_diesel)
+        btn_guardar_diesel.pack(side=tk.LEFT)
 
     def crear_seccion_gastos_adicionales(self, parent, viaje):
         """Crea sección de gastos adicionales en tksheet"""
@@ -1467,7 +1716,9 @@ class AplicacionViajes:
     def crear_barra_estado(self, parent):
         """Crea barra de estado en la parte inferior"""
         estado_frame = ttk.Frame(parent)
-        estado_frame.pack(fill=tk.X, pady=(0, 5))
+        # CORREGIDO: side=tk.BOTTOM para reservar siempre su espacio en la parte
+        # inferior de la ventana (ver comentario en abrir_modulo_consulta)
+        estado_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 5))
         
         self.label_estado = ttk.Label(estado_frame, text="Listo", relief=tk.SUNKEN)
         self.label_estado.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -1478,7 +1729,9 @@ class AplicacionViajes:
     def crear_botones_principales(self, parent):
         """Crea botones principales de acción"""
         btn_frame = ttk.Frame(parent)
-        btn_frame.pack(fill=tk.X)
+        # CORREGIDO: side=tk.BOTTOM para reservar siempre su espacio en la parte
+        # inferior de la ventana (ver comentario en abrir_modulo_consulta)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X)
         
         btn_actualizar = ttk.Button(btn_frame, text="📥 Actualizar Datos", 
                                     command=lambda: self.abrir_modo_actualizacion(self.ventana_consulta))
@@ -1692,6 +1945,12 @@ class AplicacionViajes:
             viajes_filtrados = [v for v in viajes_filtrados 
                             if any(estado in v.get('advertencias', []) for estado in estados_buscados)]
         
+        # NUEVO: Filtro EXCLUIR DOBLES (activo por defecto). A diferencia de los checkboxes
+        # anteriores (que incluyen solo lo marcado), este OCULTA los viajes DOBLE de la vista.
+        if self.filtro_valor.get('estado_excluir_doble', tk.BooleanVar(value=True)).get():
+            viajes_filtrados = [v for v in viajes_filtrados 
+                            if 'DOBLE' not in v.get('advertencias', [])]
+        
         # Enriquecer con casetas
         self.actualizar_estado("Calculando estadísticas...")
         viajes_enriquecidos = enriquecer_viajes_con_casetas(self.db_manager, viajes_filtrados)
@@ -1749,6 +2008,11 @@ class AplicacionViajes:
             self.filtro_valor['estado_analizar2'].set(False)
         if 'estado_analizar3' in self.filtro_valor:
             self.filtro_valor['estado_analizar3'].set(False)
+        
+        # NUEVO: "Excluir Dobles" regresa a su estado por defecto (activo), a diferencia
+        # de los demás checkboxes de estado que se desactivan
+        if 'estado_excluir_doble' in self.filtro_valor:
+            self.filtro_valor['estado_excluir_doble'].set(True)
         
         self.actualizar_estado("Filtros limpiados")
     
@@ -1837,6 +2101,12 @@ class AplicacionViajes:
                 self.sheet.column_width(i, w)
             except:
                 pass
+        
+        # NUEVO: Colorear de gris claro las filas de viajes marcados como DOBLE
+        self.sheet.dehighlight_all(redraw=False)
+        filas_doble = [i for i, e in enumerate(viajes) if 'DOBLE' in e.get('advertencias', [])]
+        if filas_doble:
+            self.sheet.highlight_rows(rows=filas_doble, bg="#D3D3D3", fg="#000000", redraw=False)
         
         # Guardar datos originales para ordenamiento
         self.datos_actuales = viajes
@@ -1974,7 +2244,16 @@ RESULTADOS ACTUALES:
         # Crear ventana Toplevel
         ventana_rutas = tk.Toplevel(self.ventana_consulta)
         ventana_rutas.title("Vista de Rutas")
-        ventana_rutas.geometry("1400x800")
+        
+        # CORREGIDO: No exceder el tamaño real de la pantalla (evita que en
+        # resoluciones bajas, como 1366x768, la ventana pida más alto de lo que
+        # cabe y termine recortando contenido)
+        screen_w = ventana_rutas.winfo_screenwidth()
+        screen_h = ventana_rutas.winfo_screenheight()
+        ancho_ventana = min(1400, screen_w - 50)
+        alto_ventana = min(800, screen_h - 80)
+        ventana_rutas.geometry(f"{ancho_ventana}x{alto_ventana}")
+        ventana_rutas.minsize(900, 500)
         
         # Registrar ventana
         self.ventanas_detalles.append(ventana_rutas)
@@ -2032,6 +2311,18 @@ RESULTADOS ACTUALES:
         btn_limpiar = ttk.Button(grid_frame, text="🗑️ Limpiar", 
                                 command=lambda: limpiar_filtro_rutas())
         btn_limpiar.grid(row=0, column=3, padx=5, pady=5)
+        
+        # CORREGIDO: Los contenedores de botones y barra de estado se crean y
+        # empaquetan (side=tk.BOTTOM) ANTES que la sección de resultados, para que
+        # su espacio siempre quede reservado en la parte inferior de la ventana,
+        # sin importar la resolución de pantalla. Los widgets internos (botones,
+        # labels) se siguen agregando más abajo en el código, donde ya existen las
+        # funciones que sus comandos necesitan (exportar_rutas_excel, al_cerrar).
+        status_frame = ttk.Frame(main_frame)
+        status_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5, 0))
+        
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
         
         # ==================== SECCIÓN DE RESULTADOS ====================
         resultados_frame = ttk.LabelFrame(main_frame, text="Resultados", padding="5")
@@ -2271,9 +2562,7 @@ RESULTADOS ACTUALES:
             label_stats.config(text=f"Rutas: {num:,}")
         
         # ==================== BOTONES PRINCIPALES ====================
-        btn_frame = ttk.Frame(main_frame)
-        btn_frame.pack(fill=tk.X, pady=(10, 0))
-        
+        # (btn_frame ya fue creado y empaquetado más arriba, anclado al fondo)
         btn_exportar = ttk.Button(btn_frame, text="📊 Exportar a Excel", 
                                 command=exportar_rutas_excel)
         btn_exportar.pack(side=tk.LEFT, padx=5)
@@ -2283,9 +2572,7 @@ RESULTADOS ACTUALES:
         btn_cerrar.pack(side=tk.RIGHT, padx=5)
         
         # ==================== BARRA DE ESTADO ====================
-        status_frame = ttk.Frame(main_frame)
-        status_frame.pack(fill=tk.X, pady=(5, 0))
-        
+        # (status_frame ya fue creado y empaquetado más arriba, anclado al fondo)
         label_estado = ttk.Label(status_frame, text="Listo", relief=tk.SUNKEN, anchor=tk.W)
         label_estado.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
         

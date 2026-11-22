@@ -4,6 +4,7 @@ import json
 import pandas as pd
 import re
 import sys
+import os
 from pathlib import Path
 from datetime import timedelta
 from datetime import datetime
@@ -263,6 +264,15 @@ def detectar_viajes_dobles(db_manager):
                     viaje2['datos']['advertencias'].append('DOBLE')
                     viajes_dobles.append(viaje2['id_viaje'])
                     
+                    # NUEVO: Guardar relación entre ambos viajes.
+                    # En el viaje DOBLE se guarda el ID del viaje original al que pertenece.
+                    viaje2['datos']['doble_relacionado_id'] = viaje1['id_viaje']
+                    
+                    # En el viaje original se guarda un tag invisible (no forma parte de
+                    # 'advertencias', por lo que no se muestra al usuario) con el ID del
+                    # viaje DOBLE relacionado. Sirve para comprobaciones y depuración.
+                    viaje1['datos']['doble_origen_de'] = viaje2['id_viaje']
+                    
                     print(f"  ⚠️  Viaje DOBLE detectado:")
                     print(f"     Tracto: {tracto}")
                     print(f"     Viaje 1: {viaje1['id_viaje']} (inicio: {viaje1['fecha_inicio']})")
@@ -427,6 +437,114 @@ def marcar_viajes_finales(db_manager):
     print(f"[VERIFICACIÓN] {viajes_marcados} viaje(s) marcado(s) como FINAL ({len(viajes_por_tracto)} tractos)")
     
     return viajes_marcados
+
+
+def aplicar_precio_rendimiento_general(db_manager, precio_diesel_general=None, rendimiento_general=None):
+    """
+    Establece precio de diesel y/o rendimiento general en los viajes que todavía no
+    tengan un valor individual asignado. No sobrescribe valores ya establecidos (por
+    ejemplo, correcciones manuales hechas por viaje desde la ventana de detalles), ya
+    que ambos son valores únicos por viaje.
+    
+    Se usa como solución temporal mientras no se cuenta con un excel que provea estos
+    datos por viaje: el usuario los captura una vez de forma general al cargar/actualizar
+    los datos, y se aplican solo a los viajes que aún no tienen su propio valor.
+    
+    Parámetros:
+    - db_manager: instancia de DatabaseManager
+    - precio_diesel_general: precio por litro a aplicar (float) o None para no tocar el campo
+    - rendimiento_general: kilómetros recorridos por litro a aplicar (float) o None
+    
+    Retorna: número de viajes a los que se les asignó algún valor
+    """
+    if precio_diesel_general is None and rendimiento_general is None:
+        return 0
+    
+    print("\n[DIESEL] Aplicando precio de diesel / rendimiento general a viajes sin valor propio...")
+    
+    aplicados = 0
+    for id_viaje, viaje in db_manager.data['viajes'].items():
+        cambiado = False
+        
+        if precio_diesel_general is not None and viaje.get('precio_diesel') is None:
+            viaje['precio_diesel'] = precio_diesel_general
+            cambiado = True
+        
+        if rendimiento_general is not None and viaje.get('rendimiento') is None:
+            viaje['rendimiento'] = rendimiento_general
+            cambiado = True
+        
+        if cambiado:
+            aplicados += 1
+    
+    print(f"[DIESEL] Precio/rendimiento general aplicado a {aplicados} viaje(s)")
+    
+    return aplicados
+
+
+def calcular_costo_diesel_de_viaje(viaje):
+    """
+    Calcula y asigna el costo de diesel de UN viaje (dict) a partir de sus campos
+    'kilometros', 'precio_diesel' y 'rendimiento':
+    
+        litros = kilometros / rendimiento
+        costo_diesel = litros * precio_diesel
+    
+    El rendimiento se interpreta como kilómetros recorridos por cada litro de diesel
+    (por ejemplo, rendimiento=2 significa 1 litro de diesel por cada 2 kilómetros).
+    
+    Se omite el cálculo (costo_diesel queda en None) cuando:
+    - kilometros es None o 0
+    - precio_diesel es None
+    - rendimiento es None o 0 (evita división entre cero)
+    
+    Modifica el dict 'viaje' en el lugar (in-place) y también lo retorna.
+    """
+    km = viaje.get('kilometros')
+    precio = viaje.get('precio_diesel')
+    rendimiento = viaje.get('rendimiento')
+    
+    if not km or precio is None or not rendimiento:
+        viaje['costo_diesel'] = None
+        return viaje
+    
+    try:
+        litros = km / rendimiento
+        viaje['costo_diesel'] = round(litros * precio, 2)
+    except (TypeError, ZeroDivisionError):
+        viaje['costo_diesel'] = None
+    
+    return viaje
+
+
+def calcular_costo_diesel_viajes(db_manager):
+    """
+    Calcula el costo de diesel de cada viaje de la base de datos a partir de sus
+    kilómetros, precio de diesel y rendimiento individuales (ver
+    calcular_costo_diesel_de_viaje para la fórmula y los casos que se omiten).
+    
+    Debe ejecutarse cada vez que se crea/actualiza la base de datos. Para recalcular
+    el costo de UN solo viaje (por ejemplo, tras una edición manual desde la interfaz),
+    usar directamente calcular_costo_diesel_de_viaje en lugar de esta función, para
+    evitar recorrer toda la base de datos innecesariamente.
+    
+    Retorna: (calculados, omitidos)
+    """
+    print("\n[DIESEL] Calculando costo de diesel por viaje...")
+    
+    calculados = 0
+    omitidos = 0
+    
+    for id_viaje, viaje in db_manager.data['viajes'].items():
+        calcular_costo_diesel_de_viaje(viaje)
+        if viaje.get('costo_diesel') is not None:
+            calculados += 1
+        else:
+            omitidos += 1
+    
+    print(f"[DIESEL] Costo de diesel calculado para {calculados} viaje(s), omitidos: {omitidos}")
+    
+    return calculados, omitidos
 
 class IndicesCasetas:
     """
@@ -595,8 +713,8 @@ def merge_gastos_data(existing_gastos, new_gastos):
     Combina datos de excel de gastos (multi-hoja) siguiendo lógica: REEMPLAZAR + MANTENER
     
     Parámetros:
-    - existing_gastos: dict con hojas {'GASTOS': [...], 'CIERRE 35': [...], 'MODIFICACIONES_COMISION': {...}} o None/0
-    - new_gastos: dict con hojas {'GASTOS': [...], 'CIERRE 35': [...], 'MODIFICACIONES_COMISION': {...}}
+    - existing_gastos: dict con hojas {'GASTOS': [...], 'CIERRE 35': [...], 'HOJAS_OPERADORES': {...}} o None/0
+    - new_gastos: dict con hojas {'GASTOS': [...], 'CIERRE 35': [...], 'HOJAS_OPERADORES': {...}}
     
     Retorna: dict con datos combinados
     """
@@ -625,39 +743,57 @@ def merge_gastos_data(existing_gastos, new_gastos):
         id_col=2  # Columna C (índice 2) = ID viaje en CIERRE 35
     )
     
-    # NUEVO: Procesar modificaciones de comisiones (merge de diccionarios)
-    modificaciones_existing = existing_gastos.get('MODIFICACIONES_COMISION', {})
-    modificaciones_new = new_gastos.get('MODIFICACIONES_COMISION', {})
+    # Procesar datos crudos de hojas de operadores (merge por clave "archivo::hoja").
+    # Como cada clave ya incluye el nombre del archivo de origen, hojas con el mismo
+    # nombre de operador provenientes de excels distintos (por ejemplo, meses distintos)
+    # se conservan como entradas separadas. Solo se reemplaza si el mismo archivo se
+    # vuelve a procesar (misma clave archivo+hoja).
+    hojas_operadores_existing = existing_gastos.get('HOJAS_OPERADORES', {})
+    hojas_operadores_new = new_gastos.get('HOJAS_OPERADORES', {})
     
-    # Combinar: los nuevos reemplazan a los existentes si hay conflicto
-    modificaciones_combined = {**modificaciones_existing, **modificaciones_new}
+    hojas_operadores_combined = {**hojas_operadores_existing, **hojas_operadores_new}
     
-    if modificaciones_new:
-        print(f"[MERGE MODIFICACIONES] Existentes: {len(modificaciones_existing)}, Nuevas: {len(modificaciones_new)}, Total: {len(modificaciones_combined)}")
+    if hojas_operadores_new:
+        print(f"[MERGE HOJAS OPERADORES] Existentes: {len(hojas_operadores_existing)}, "
+              f"Nuevas: {len(hojas_operadores_new)}, Total: {len(hojas_operadores_combined)}")
     
     resultado = {
         'GASTOS': gastos_combined,
         'CIERRE 35': cierre35_combined
     }
     
-    # Solo incluir modificaciones si existen
-    if modificaciones_combined:
-        resultado['MODIFICACIONES_COMISION'] = modificaciones_combined
+    # Solo incluir hojas de operadores si existen
+    if hojas_operadores_combined:
+        resultado['HOJAS_OPERADORES'] = hojas_operadores_combined
     
     return resultado
 
 def procesar_hojas_operadores(filepath):
     """
-    Procesa hojas de operadores (que inician con "O") para calcular modificaciones de comisiones.
+    Captura los datos crudos de las hojas de operadores (que inician con "O").
+    
+    IMPORTANTE: Esta función SOLO extrae los datos de las hojas, NO calcula la
+    distribución de comisiones todavía. Esto es porque la distribución debe tomar
+    en cuenta los viajes marcados como DOBLE, y esa detección solo puede hacerse
+    una vez que los viajes ya están cargados en la base de datos. El cálculo final
+    se realiza posteriormente con calcular_modificaciones_comision(), después de
+    ejecutar detectar_viajes_dobles().
     
     Cada hoja contiene:
     - Primera tabla (fila 14+): Columna B=ID viaje, Columna H=Comisión
     - Segunda tabla: Buscar "FONDO AHORRO" y "PAGO 7MO DIA" en columna F, obtener valores de columna H
     
-    Calcula: (FONDO AHORRO + PAGO 7MO DIA) / número_viajes
-    Y agrega ese valor a cada comisión.
+    NOTA: La clave del diccionario retornado combina el nombre del archivo con el
+    nombre de la hoja (formato "archivo::hoja"). Esto es necesario porque distintos
+    excels (por ejemplo, de meses diferentes) suelen reutilizar los mismos nombres de
+    hoja (mismo operador), y usar solo el nombre de hoja como clave provocaría que al
+    combinar (merge_gastos_data) los datos de un excel reemplacen por error a los de
+    otro. El campo 'hoja_nombre' dentro de cada entrada conserva el nombre original de
+    la hoja para fines de presentación/log.
     
-    Retorna: dict {id_viaje: nueva_comision}
+    Retorna: dict {"archivo::hoja_nombre": {'hoja_nombre': str, 
+                                             'viajes_comisiones': [{'id_viaje':..., 'comision_original':...}, ...],
+                                             'fondo_ahorro': float, 'pago_7mo_dia': float}}
     """
     try:
         xls = pd.ExcelFile(filepath, engine='openpyxl')
@@ -668,9 +804,10 @@ def procesar_hojas_operadores(filepath):
         if not hojas_operadores:
             return {}
         
-        print(f"[GASTOS] Procesando {len(hojas_operadores)} hoja(s) de operadores...")
+        print(f"[GASTOS] Capturando {len(hojas_operadores)} hoja(s) de operadores...")
         
-        modificaciones_comisiones = {}
+        nombre_archivo = os.path.basename(filepath)
+        datos_hojas_operadores = {}
         
         for hoja_nombre in hojas_operadores:
             try:
@@ -741,34 +878,116 @@ def procesar_hojas_operadores(filepath):
                         except:
                             pago_7mo_dia = 0.0
                 
-                # ===== CALCULAR DISTRIBUCIÓN =====
-                suma_extras = fondo_ahorro + pago_7mo_dia
-                num_viajes = len(viajes_comisiones)
-                
-                if num_viajes > 0 and suma_extras > 0:
-                    distribucion_por_viaje = suma_extras / num_viajes
-                    
-                    print(f"  Hoja '{hoja_nombre[:30]}...': {num_viajes} viajes, Fondo=${fondo_ahorro:,.2f}, 7mo=${pago_7mo_dia:,.2f}, Dist=${distribucion_por_viaje:,.2f}")
-                    
-                    # Aplicar distribución a cada viaje
-                    for viaje in viajes_comisiones:
-                        id_viaje = viaje['id_viaje']
-                        comision_original = viaje['comision_original']
-                        nueva_comision = comision_original + distribucion_por_viaje
-                        
-                        modificaciones_comisiones[id_viaje] = nueva_comision
+                # Guardar datos crudos de la hoja (sin calcular distribución todavía).
+                # Clave única: archivo + nombre de hoja, para no perder datos al combinar
+                # excels distintos que reutilicen el mismo nombre de hoja.
+                clave_hoja = f"{nombre_archivo}::{hoja_nombre}"
+                datos_hojas_operadores[clave_hoja] = {
+                    'hoja_nombre': hoja_nombre,
+                    'viajes_comisiones': viajes_comisiones,
+                    'fondo_ahorro': fondo_ahorro,
+                    'pago_7mo_dia': pago_7mo_dia
+                }
                 
             except Exception as e:
                 print(f"  Error procesando hoja '{hoja_nombre}': {e}")
                 continue
         
-        print(f"[GASTOS] Total de viajes con comisión modificada: {len(modificaciones_comisiones)}")
+        print(f"[GASTOS] Hojas de operadores capturadas: {len(datos_hojas_operadores)}")
         
-        return modificaciones_comisiones
+        return datos_hojas_operadores
         
     except Exception as e:
         print(f"[GASTOS] Error procesando hojas de operadores: {e}")
         return {}
+
+
+def calcular_modificaciones_comision(db_manager, hojas_operadores):
+    """
+    Calcula las comisiones ajustadas de los viajes a partir de los datos crudos de
+    las hojas de operadores, tomando en cuenta los viajes marcados como DOBLE.
+    
+    Debe ejecutarse DESPUÉS de detectar_viajes_dobles(), ya que necesita conocer
+    qué viajes están marcados como DOBLE y a qué viaje original están relacionados
+    (campo 'doble_relacionado_id').
+    
+    Lógica de viajes DOBLE:
+    - No se cuentan en el número de viajes para la distribución de FONDO AHORRO / PAGO 7MO DIA
+    - Su comisión original (columna H de la hoja) se elimina de su propio registro y se
+      suma a la comisión original del viaje al que están relacionados (viaje original)
+    - Un viaje DOBLE y su viaje original SIEMPRE se encuentran dentro de la misma hoja de
+      operador, por lo que la fusión se busca únicamente dentro de esa misma hoja. Si por
+      alguna razón el viaje original no se encuentra ahí, se omite la fusión para ese viaje
+      DOBLE (se procesa como un registro normal, sin excluirlo ni fusionarlo).
+    
+    Parámetros:
+    - db_manager: instancia de DatabaseManager (ya con detectar_viajes_dobles ejecutado)
+    - hojas_operadores: dict {hoja_key: {'hoja_nombre': str, 'viajes_comisiones': [...], 
+                                          'fondo_ahorro': float, 'pago_7mo_dia': float}}
+    
+    Retorna: dict {id_viaje: nueva_comision}
+    """
+    if not hojas_operadores:
+        return {}
+    
+    print(f"\n[COMISIONES] Calculando distribución de comisiones ({len(hojas_operadores)} hoja(s))...")
+    
+    modificaciones_comisiones = {}
+    viajes_fusionados = 0
+    
+    for hoja_key, hoja_data in hojas_operadores.items():
+        hoja_nombre = hoja_data.get('hoja_nombre', hoja_key)
+        fondo_ahorro = hoja_data.get('fondo_ahorro', 0.0)
+        pago_7mo_dia = hoja_data.get('pago_7mo_dia', 0.0)
+        
+        # Diccionario editable id_viaje -> comision_original, solo dentro de esta hoja
+        comisiones_por_id = {
+            entry['id_viaje']: entry['comision_original']
+            for entry in hoja_data.get('viajes_comisiones', [])
+        }
+        
+        # Fusionar viajes DOBLE con su viaje original (búsqueda solo dentro de la misma hoja)
+        for id_viaje in list(comisiones_por_id.keys()):
+            datos_db = db_manager.data['viajes'].get(id_viaje)
+            
+            if not datos_db or 'DOBLE' not in datos_db.get('advertencias', []):
+                continue
+            
+            id_original = datos_db.get('doble_relacionado_id')
+            
+            if not id_original or id_original == id_viaje or id_original not in comisiones_por_id:
+                print(f"  ⚠️ Viaje DOBLE {id_viaje}: no se encontró el viaje original "
+                      f"{id_original or ''} dentro de la misma hoja '{hoja_nombre[:30]}...'. "
+                      f"Se omite la fusión para este viaje.")
+                continue
+            
+            # Quitar la comisión del viaje DOBLE y sumarla al viaje original
+            comision_doble = comisiones_por_id.pop(id_viaje)
+            comisiones_por_id[id_original] += comision_doble
+            viajes_fusionados += 1
+            
+            print(f"  Viaje DOBLE {id_viaje} fusionado con viaje original {id_original} "
+                  f"en hoja '{hoja_nombre[:30]}...' (comisión sumada: ${comision_doble:,.2f})")
+        
+        # Calcular distribución de esta hoja (ya sin los viajes DOBLE fusionados)
+        num_viajes = len(comisiones_por_id)
+        suma_extras = fondo_ahorro + pago_7mo_dia
+        
+        if num_viajes > 0 and suma_extras > 0:
+            distribucion_por_viaje = suma_extras / num_viajes
+            
+            print(f"  Hoja '{hoja_nombre[:30]}...': {num_viajes} viajes (excluyendo dobles), "
+                  f"Fondo=${fondo_ahorro:,.2f}, 7mo=${pago_7mo_dia:,.2f}, Dist=${distribucion_por_viaje:,.2f}")
+            
+            for id_viaje, comision_original in comisiones_por_id.items():
+                modificaciones_comisiones[id_viaje] = comision_original + distribucion_por_viaje
+    
+    if viajes_fusionados:
+        print(f"[COMISIONES] Viajes DOBLE fusionados con su viaje original: {viajes_fusionados}")
+    
+    print(f"[COMISIONES] Total de viajes con comisión ajustada calculada: {len(modificaciones_comisiones)}")
+    
+    return modificaciones_comisiones
 
 def merge_tablero_costos(existing, new):
     """
@@ -1974,20 +2193,20 @@ class DatabaseManager:
         if not existe:
             self.data['relaciones'].append(relacion)
     
-    def enriquecer_viajes_desde_cierre(self, dataayc, ayc_header_rows=4, col_id_viaje=1):
+    def enriquecer_viajes_desde_cierre(self, dataayc, ayc_header_rows=4, col_id_viaje=1, col_U=20):
         """
         Enriquece los viajes existentes con datos del excel de cierre.
         Lógica: REEMPLAZAR + MANTENER
         - Campos nuevos: se agregan
         - Campos existentes: se reemplazan con nuevos datos
         
-        Agrega campos: clave, ensamble, frontal, dolly, trasero, id_ruta
+        Agrega campos: clave, ensamble, frontal, dolly, trasero, id_ruta, kilometros
         """
         if not dataayc or len(dataayc) <= ayc_header_rows:
             print("[DB] No hay datos de cierre para procesar")
             return 0
         
-        info_by_viaje, procesados = build_info_from_dataayc(dataayc, ayc_header_rows, col_id_viaje)
+        info_by_viaje, procesados = build_info_from_dataayc(dataayc, ayc_header_rows, col_id_viaje, col_U=col_U)
         
         actualizados = 0
         rutas_creadas = 0
@@ -2013,6 +2232,12 @@ class DatabaseManager:
                 if info.get('trasero'):
                     viaje['trasero'] = info['trasero']
                 
+                # NUEVO: kilómetros (columna U). Se guarda aunque sea 0.0, ya que es
+                # información real leída del excel; la interfaz permite corregirla
+                # manualmente cuando viene vacía o en 0.00.
+                if info.get('kilometros') is not None:
+                    viaje['kilometros'] = info['kilometros']
+                
                 # Crear/actualizar ID_RUTA
                 clave = info.get('clave')
                 nombre_ruta = viaje.get('ruta')
@@ -2032,6 +2257,7 @@ class DatabaseManager:
                     'frontal': info.get('frontal'),
                     'dolly': info.get('dolly'),
                     'trasero': info.get('trasero'),
+                    'kilometros': info.get('kilometros'),  # NUEVO
                     'advertencias': [],
                     'origen': 'cierre_solamente'
                 }
@@ -2055,8 +2281,12 @@ class DatabaseManager:
         - Si no existe: crea entrada parcial
         
         datagastos debe ser un dict con hojas 'GASTOS' y 'CIERRE 35'
-        Opcionalmente puede incluir 'MODIFICACIONES_COMISION'
-        Agrega campos: gasto, comision, comision_ajustada (si aplica)
+        Agrega campos: gasto, comision
+        
+        NOTA: El campo 'comision_ajustada' (basado en las hojas de operadores "O")
+        ya NO se calcula ni se asigna aquí. Debe aplicarse posteriormente mediante
+        calcular_modificaciones_comision(), después de ejecutar detectar_viajes_dobles(),
+        ya que ese cálculo necesita saber qué viajes están marcados como DOBLE.
         """
         actualizados = 0
         nuevos = 0
@@ -2094,9 +2324,6 @@ class DatabaseManager:
                 except Exception:
                     continue
         
-        # NUEVO: Obtener tabla de modificaciones de comisiones
-        modificaciones_comision = datagastos.get('MODIFICACIONES_COMISION', {})
-        
         # Procesar hoja CIERRE 35
         if 'CIERRE 35' in datagastos:
             hoja_cierre35 = datagastos['CIERRE 35']
@@ -2113,40 +2340,24 @@ class DatabaseManager:
                     if not id_viaje.startswith('HID') or id_viaje.startswith('HIDVCHID'):
                         continue
                     
-                    # NUEVO: Buscar si hay modificación de comisión para este viaje
-                    comision_ajustada = modificaciones_comision.get(id_viaje)
-                    
                     if id_viaje in self.data['viajes']:
                         # REEMPLAZAR: actualizar comisión
                         if comision is not None and not pd.isna(comision):
                             self.data['viajes'][id_viaje]['comision'] = float(comision)
-                            
-                            # NUEVO: Si hay comisión ajustada, guardarla también
-                            if comision_ajustada is not None:
-                                self.data['viajes'][id_viaje]['comision_ajustada'] = float(comision_ajustada)
-                            
                             actualizados += 1
                     else:
                         # AGREGAR: crear entrada parcial
                         if comision is not None and not pd.isna(comision):
-                            viaje_data = {
+                            self.data['viajes'][id_viaje] = {
                                 'comision': float(comision),
                                 'advertencias': [],
                                 'origen': 'gastos_comm'
                             }
-                            
-                            # NUEVO: Si hay comisión ajustada, incluirla
-                            if comision_ajustada is not None:
-                                viaje_data['comision_ajustada'] = float(comision_ajustada)
-                            
-                            self.data['viajes'][id_viaje] = viaje_data
                             nuevos += 1
                 except Exception:
                     continue
         
         print(f"[DB] Viajes actualizados con gastos: {actualizados}, nuevos: {nuevos}")
-        if modificaciones_comision:
-            print(f"[DB] Viajes con comisión ajustada: {len(modificaciones_comision)}")
         
         return actualizados + nuevos
         
@@ -2384,7 +2595,8 @@ def detectar_tipo_excel_multi_hoja(excel_path):
 def construir_base_datos_desde_excels(datamon, datacas, dataayc, datagastos,
                                        mon_header_rows=5, cas_header_rows=1,
                                        db_manager=None, is_update=False,
-                                       dataadicional=None):
+                                       dataadicional=None,
+                                       precio_diesel_general=None, rendimiento_general=None):
     """
     Construye la base de datos a partir de los excels cargados.
     Reemplaza la función crear_tabla_relacional_viaje_caseta.
@@ -2392,6 +2604,10 @@ def construir_base_datos_desde_excels(datamon, datacas, dataayc, datagastos,
     Parámetros:
     - is_update: Si True, permite que datamon y datacas sean None/vacíos (modo actualización)
                  Si False, datamon y datacas son obligatorios (modo creación inicial)
+    - precio_diesel_general: precio por litro de diesel a aplicar por defecto a los viajes
+                              que no tengan un valor individual (captura manual del usuario)
+    - rendimiento_general: rendimiento (km por litro) a aplicar por defecto a los viajes
+                            que no tengan un valor individual (captura manual del usuario)
     
     Retorna: DatabaseManager con los datos cargados
     """
@@ -2557,6 +2773,9 @@ def construir_base_datos_desde_excels(datamon, datacas, dataayc, datagastos,
     else:
         print("[DB] No hay datos de casetas para procesar")
     
+    # NUEVO PASO 6.4: Marcar viajes dobles
+    detectar_viajes_dobles(db_manager)
+
     # PASO 3: Crear relaciones viaje-caseta OPTIMIZADO
     if len(db_manager.data['viajes']) > 0 and len(db_manager.data['casetas']) > 0:
         print("[DB] Procesando relaciones viaje-caseta (optimizado)...")
@@ -2596,6 +2815,7 @@ def construir_base_datos_desde_excels(datamon, datacas, dataayc, datagastos,
         # Procesar viajes
         relaciones_creadas = 0
         viajes_sin_casetas = 0
+        viajes_omitidos = 0
         
         total_procesar = len(viajes_a_procesar)
         procesados = 0
@@ -2606,6 +2826,13 @@ def construir_base_datos_desde_excels(datamon, datacas, dataayc, datagastos,
                 print(f"[PROGRESO] {procesados}/{total_procesar} viajes", end='\r', flush=True)
             
             datos_viaje = db_manager.data['viajes'][id_viaje]
+            
+            # NUEVO: Ignorar viajes IRREAL y DOBLE
+            advertencias = datos_viaje.get('advertencias', [])
+            if 'IRREAL' in advertencias or 'DOBLE' in advertencias:
+                viajes_omitidos += 1
+                continue
+            
             tracto = datos_viaje.get('tracto')
             
             if not tracto:
@@ -2663,8 +2890,24 @@ def construir_base_datos_desde_excels(datamon, datacas, dataayc, datagastos,
         print("[DB] Enriqueciendo viajes con gastos adicionales...")
         db_manager.enriquecer_viajes_desde_adicionales(dataadicional)
 
-    # NUEVO PASO 6.4: Marcar viajes dobles
-    detectar_viajes_dobles(db_manager)
+    
+
+    # NUEVO PASO 6.45: Calcular y aplicar comisión ajustada de hojas de operadores.
+    # Debe ejecutarse DESPUÉS de detectar_viajes_dobles, ya que la distribución de
+    # FONDO AHORRO / PAGO 7MO DIA excluye a los viajes DOBLE, y su comisión original
+    # se fusiona con la del viaje original relacionado.
+    if datagastos and datagastos != 0:
+        hojas_operadores = datagastos.get('HOJAS_OPERADORES', {})
+        if hojas_operadores:
+            modificaciones_comision = calcular_modificaciones_comision(db_manager, hojas_operadores)
+            
+            aplicados = 0
+            for id_viaje, nueva_comision in modificaciones_comision.items():
+                if id_viaje in db_manager.data['viajes']:
+                    db_manager.data['viajes'][id_viaje]['comision_ajustada'] = nueva_comision
+                    aplicados += 1
+            
+            print(f"[DB] Viajes con comisión ajustada aplicada: {aplicados}")
 
     # NUEVO PASO 6.5: Detectar estados de análisis
     detectar_estados_analisis(db_manager)
@@ -2676,6 +2919,11 @@ def construir_base_datos_desde_excels(datamon, datacas, dataayc, datagastos,
     # Solo si hay rutas cargadas en la base de datos
     if len(db_manager.data.get('rutas', {})) > 0:
         verificar_comisiones_vs_rutas(db_manager)
+
+    # NUEVO PASO 6.8: Aplicar precio de diesel / rendimiento general (a viajes sin valor
+    # propio) y calcular el costo de diesel de todos los viajes
+    aplicar_precio_rendimiento_general(db_manager, precio_diesel_general, rendimiento_general)
+    calcular_costo_diesel_viajes(db_manager)
 
     # PASO 7: Guardar la base de datos
     print("[DB] Guardando base de datos...")
@@ -2709,16 +2957,22 @@ def agregar_casetas_fuera_db(db_manager, datacas, cas_header_rows=1):
         tracto = datos_viaje.get('tracto')
         if not tracto:
             continue
-        
+
+        # Ignorar viajes inválidos
+        advertencias = datos_viaje.get('advertencias', [])
+
+        if 'IRREAL' in advertencias or 'DOBLE' in advertencias:
+            continue
+
         try:
             fecha_inicio = pd.to_datetime(datos_viaje['fecha_inicio'])
             fecha_final = pd.to_datetime(datos_viaje['fecha_final'])
         except:
             continue
-        
+
         if tracto not in viajes_por_tracto:
             viajes_por_tracto[tracto] = []
-        
+
         viajes_por_tracto[tracto].append({
             'id_viaje': id_viaje,
             'fecha_inicio': fecha_inicio,
@@ -3091,12 +3345,14 @@ def normalizar_fechas_casetas(datacas, cas_fecha_col=9, cas_hora_col=10, header_
     print(f"[NORMALIZAR] Filas de casetas modificadas (fecha/hora extraídas): {n_modificados}")
     return datacas, n_modificados
 
-def build_info_from_dataayc(dataayc, ayc_header_rows=4, col_id_viaje=1, col_L=11, col_M=12, col_H=7):
+def build_info_from_dataayc(dataayc, ayc_header_rows=4, col_id_viaje=1, col_L=11, col_M=12, col_H=7, col_U=20):
     """
-    Construye un mapa { id_viaje: {'colL': valL, 'frontal':..., 'dolly':..., 'trasero':...} }
+    Construye un mapa { id_viaje: {'colL': valL, 'frontal':..., 'dolly':..., 'trasero':..., 'kilometros':...} }
     - ayc_header_rows: 1-based row index of header (user said header row 4 -> pass 4)
       Internamente se usa como 0-based start = ayc_header_rows (fila siguiente al header).
-    - col_id_viaje, col_L, col_M: índices 0-based de las columnas B, L, M por defecto.
+    - col_id_viaje, col_L, col_M, col_H: índices 0-based de las columnas B, L, M, H por defecto.
+    - col_U: índice 0-based de la columna U (Kilómetros) por defecto. Presente y en la
+      misma posición tanto en el formato viejo como en el nuevo de apertura/cierre.
     Retorna (info_by_viaje, conteo) donde conteo es número de registros procesados.
     """
     info_by_viaje = {}
@@ -3118,8 +3374,19 @@ def build_info_from_dataayc(dataayc, ayc_header_rows=4, col_id_viaje=1, col_L=11
         valL = row[col_L] if col_L < len(row) else None
         valM = row[col_M] if col_M < len(row) else None
         clave = row[col_H] if col_H < len(row) else None
+        valU = row[col_U] if col_U < len(row) else None
 
         frontal, dolly, trasero = parse_ensamble_field(valM)
+
+        # NUEVO: parsear kilómetros (columna U). Con frecuencia viene vacío o en 0.00;
+        # se guarda el valor tal cual (incluyendo 0.0) para que la interfaz permita
+        # corregirlo manualmente si es necesario.
+        kilometros = None
+        try:
+            if valU is not None and not pd.isna(valU):
+                kilometros = float(valU)
+        except (ValueError, TypeError):
+            kilometros = None
 
         # Guardar (si ya existe, no sobrescribimos salvo que quieras actualizar)
         if id_v_str not in info_by_viaje:
@@ -3128,7 +3395,8 @@ def build_info_from_dataayc(dataayc, ayc_header_rows=4, col_id_viaje=1, col_L=11
                 'colL': valL if not pd.isna(valL) else None,
                 'frontal': frontal or None,
                 'dolly': dolly or None,
-                'trasero': trasero or None
+                'trasero': trasero or None,
+                'kilometros': kilometros
             }
         else:
             # Si ya existe, preferimos no sobrescribir; pero si hay campos vacíos, rellenar
@@ -3143,6 +3411,9 @@ def build_info_from_dataayc(dataayc, ayc_header_rows=4, col_id_viaje=1, col_L=11
                 cur['dolly'] = dolly
             if not cur.get('trasero') and trasero:
                 cur['trasero'] = trasero
+            # NUEVO: rellenar kilómetros solo si estaba vacío y el nuevo valor es real (>0)
+            if not cur.get('kilometros') and kilometros:
+                cur['kilometros'] = kilometros
 
         procesados += 1
 
