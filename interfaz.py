@@ -12,15 +12,6 @@ import pandas as pd
 from pathlib import Path
 from tksheet import Sheet
 from decimal import Decimal
-from datetime import datetime 
-
-# NUEVA IMPORTACIÓN
-try:
-    from tkcalendar import DateEntry
-    TKCALENDAR_AVAILABLE = True
-except ImportError:
-    TKCALENDAR_AVAILABLE = False
-    print("⚠️ tkcalendar no disponible. Instala con: pip install tkcalendar")
 
 # Intentar importar TkinterDnD
 try:
@@ -47,15 +38,8 @@ from core_viajes import (
     parsear_tablero_costo_ruta,
     construir_tabla_rutas,
     merge_clientes_particulares,      
-    merge_tablero_costos,      
-    detectar_viajes_dobles,     
-    detectar_estados_analisis, 
-    marcar_viajes_finales,  
-    merge_gastos_data,
-    detectar_subtipo_monitoreo,        
-    detectar_subtipo_apertura_cierre,   
-    estandarizar_monitoreo,              
-    estandarizar_apertura_cierre                     
+    merge_tablero_costos,              
+    merge_gastos_data                  
 )
 
 
@@ -68,111 +52,6 @@ def format_date_safe(dt):
     except Exception:
         return str(dt)
 
-
-class AutocompleteCombobox(ttk.Combobox):
-    """
-    Combobox con autocompletado que filtra opciones mientras el usuario escribe.
-    """
-    
-    def __init__(self, parent, completevalues=None, *args, **kwargs):
-        super().__init__(parent, *args, **kwargs)
-        
-        self._completevalues = completevalues or []
-        self._hits = []
-        self._hit_index = 0
-        self.position = 0
-        self._dropdown_open = False
-        
-        # Configurar eventos
-        self.bind('<KeyRelease>', self.handle_keyrelease)
-        self.bind('<<ComboboxSelected>>', self.handle_selection)
-        self.bind('<FocusIn>', self.handle_focus_in)
-        
-        # Configurar valores iniciales
-        self['values'] = self._completevalues
-    
-    def set_completion_list(self, completion_list):
-        """Actualiza la lista de valores para autocompletado"""
-        self._completevalues = sorted(completion_list, key=str.lower)
-        self['values'] = self._completevalues
-    
-    def autocomplete(self, delta=0):
-        """Autocompletado: filtra valores según lo escrito"""
-        if delta:  # Si se presionó flecha arriba/abajo
-            self.delete(self.position, tk.END)
-        else:
-            self.position = len(self.get())
-        
-        # Obtener texto actual
-        text = self.get()
-        
-        if not text:
-            # Si está vacío, mostrar todas las opciones
-            self['values'] = self._completevalues
-            return
-        
-        # Filtrar valores que contengan el texto (case-insensitive)
-        _hits = []
-        for element in self._completevalues:
-            if text.lower() in element.lower():
-                _hits.append(element)
-        
-        # Actualizar lista de coincidencias
-        if _hits != self._hits:
-            self._hit_index = 0
-            self._hits = _hits
-        
-        # Mostrar coincidencias
-        if _hits:
-            self['values'] = _hits
-            
-            # CORREGIDO: Abrir dropdown sin robar el foco
-            if not self._dropdown_open:
-                # Usar after para abrir el dropdown después de que el evento actual termine
-                self.after(1, self._open_dropdown)
-        else:
-            self['values'] = []
-    
-    def _open_dropdown(self):
-        """Abre el dropdown manteniendo el foco en el input"""
-        try:
-            # Guardar posición del cursor
-            cursor_pos = self.index(tk.INSERT)
-            
-            # Abrir dropdown
-            self.event_generate('<Button-1>')
-            self.event_generate('<ButtonRelease-1>')
-            
-            # Restaurar foco y posición del cursor inmediatamente
-            self.focus_set()
-            self.icursor(cursor_pos)
-            
-            self._dropdown_open = True
-        except:
-            pass
-    
-    def handle_keyrelease(self, event):
-        """Maneja eventos de teclado"""
-        # Ignorar teclas especiales
-        if event.keysym in ('BackSpace', 'Left', 'Right', 'Up', 'Down', 
-                           'Home', 'End', 'Return', 'Tab', 'Escape'):
-            if event.keysym in ('Return', 'Escape'):
-                self._dropdown_open = False
-            return
-        
-        # Realizar autocompletado
-        self.autocomplete()
-    
-    def handle_selection(self, event):
-        """Maneja la selección de un elemento del dropdown"""
-        self.position = len(self.get())
-        self._dropdown_open = False
-        # Mantener foco en el combobox después de selección
-        self.focus_set()
-    
-    def handle_focus_in(self, event):
-        """Maneja cuando el combobox recibe el foco"""
-        self._dropdown_open = False
 
 class AplicacionViajes:
     def __init__(self, root):
@@ -465,6 +344,7 @@ class AplicacionViajes:
             tipo_multi = detectar_tipo_excel_multi_hoja(ruta_archivo)
             
             if tipo_multi == 'gastos':
+                
                 self.log(f"  → Tipo: Gastos (multi-hoja)")
                 hoja_gastos = pd.read_excel(ruta_archivo, sheet_name='GASTOS', header=None).values.tolist()
                 hoja_cierre35 = pd.read_excel(ruta_archivo, sheet_name='CIERRE 35', header=None).values.tolist()
@@ -474,6 +354,7 @@ class AplicacionViajes:
                     'CIERRE 35': hoja_cierre35
                 }
                 
+                # ACTUALIZADO: Usar merge real
                 if self.datagastos is not None:
                     self.datagastos = merge_gastos_data(self.datagastos, nuevos_gastos)
                 else:
@@ -492,6 +373,7 @@ class AplicacionViajes:
                 data_limpia = [f for f in data if len(f) > 0 and not pd.isna(f[0])]
                 nuevos_clientes = parsear_cliente_particular(data_limpia, header_rows=1)
                 
+                # ACTUALIZADO: Usar merge con lógica reemplazar + mantener
                 if self.dataclientes is not None:
                     self.dataclientes = merge_clientes_particulares(self.dataclientes, nuevos_clientes)
                 else:
@@ -507,6 +389,7 @@ class AplicacionViajes:
                 data_limpia = [f for f in data if len(f) > 0 and not pd.isna(f[0])]
                 nuevos_costos = parsear_tablero_costo_ruta(data_limpia, header_rows=1)
                 
+                # ACTUALIZADO: Usar merge con lógica reemplazar + mantener
                 if self.datacostos is not None:
                     self.datacostos = merge_tablero_costos(self.datacostos, nuevos_costos)
                 else:
@@ -520,25 +403,12 @@ class AplicacionViajes:
             # Detección normal (monitoreo, casetas, cierre)
             tipo = detectar_tipo_excel(data)
             
-            # NUEVO: ESTANDARIZACIÓN antes de procesar
-            if tipo == 'monitoreo':
-                subtipo = detectar_subtipo_monitoreo(data)
-                if subtipo:
-                    self.log(f"  → Formato monitoreo: {subtipo}")
-                    data = estandarizar_monitoreo(data, subtipo)
-            
-            elif tipo == 'cierre':
-                subtipo = detectar_subtipo_apertura_cierre(data)
-                if subtipo:
-                    self.log(f"  → Formato apertura/cierre: {subtipo}")
-                    data = estandarizar_apertura_cierre(data, subtipo)
-            
-            # Continuar con procesamiento normal (SIN CAMBIOS)
             if tipo == 'monitoreo':
                 self.log(f"  → Tipo: Monitoreo")
                 data = preparar_excel(data, "monitoreo")
                 data = verificar_valores_unicos(data, 0, "procesoeliminar")
                 
+                # ACTUALIZADO: merge ahora usa lógica reemplazar + mantener
                 if self.datamon is not None:
                     self.datamon = merge_excel_data(self.datamon, data, 5, 0)
                 else:
@@ -554,6 +424,7 @@ class AplicacionViajes:
                                             header_rows=1, new_col_name='ID_COMBINADO')
                 data = preparar_excel(data, "casetas")
                 
+                # ACTUALIZADO: merge ahora usa lógica reemplazar + mantener
                 if self.datacas is not None:
                     id_col_idx = self.datacas[0].index('ID_COMBINADO')
                     self.datacas = merge_excel_data(self.datacas, data, 1, id_col_idx)
@@ -568,6 +439,7 @@ class AplicacionViajes:
                 data = preparar_excel(data, "cerrados")
                 data = verificar_valores_unicos(data, 1, "procesoeliminar")
                 
+                # ACTUALIZADO: merge ahora usa lógica reemplazar + mantener
                 if self.dataayc is not None:
                     self.dataayc = merge_excel_data(self.dataayc, data, 4, 1)
                 else:
@@ -672,8 +544,6 @@ class AplicacionViajes:
                 is_update=is_update
             )
             
-            detectar_viajes_dobles(self.db_manager)
-
             # Cargar/actualizar rutas si existen
             if self.dataclientes or self.datacostos:
                 self.log("Procesando tabla de rutas...")
@@ -757,9 +627,11 @@ class AplicacionViajes:
         # Variables de filtros
         self.filtro_activo = {}
         self.filtro_valor = {}
-        self.filtro_combos = {}
+        self.filtro_combos = {}  # NUEVO: Para guardar los comboboxes
         self.filtro_entries = {}
-        self.filtro_calendarios = {}  # NUEVO: Para almacenar DateEntry widgets
+        
+        # ==================== FILA 0: Filtros inteligentes ====================
+        row = 0
         
         # Obtener valores únicos de la BD
         viajes = self.db_manager.data['viajes']
@@ -770,7 +642,7 @@ class AplicacionViajes:
             ruta = v.get('ruta')
             if ruta and str(ruta).strip():
                 rutas_set.add(str(ruta).strip())
-        lista_rutas = sorted(list(rutas_set))
+        lista_rutas = ['Todos'] + sorted(list(rutas_set))
         
         # Operadores únicos
         operadores_set = set()
@@ -778,7 +650,7 @@ class AplicacionViajes:
             op = v.get('operador')
             if op and str(op).strip():
                 operadores_set.add(str(op).strip())
-        lista_operadores = sorted(list(operadores_set))
+        lista_operadores = ['Todos'] + sorted(list(operadores_set))
         
         # Tractos únicos
         tractos_set = set()
@@ -786,50 +658,20 @@ class AplicacionViajes:
             tracto = v.get('tracto')
             if tracto and str(tracto).strip():
                 tractos_set.add(str(tracto).strip())
-        lista_tractos = sorted(list(tractos_set))
+        lista_tractos = ['Todos'] + sorted(list(tractos_set))
         
-        # Clientes únicos (de rutas)
-        clientes_set = set()
-        rutas_db = self.db_manager.obtener_todas_rutas()
-        for ruta in rutas_db:
-            cliente = ruta.get('cliente')
-            if cliente and str(cliente).strip():
-                clientes_set.add(str(cliente).strip())
-        lista_clientes = sorted(list(clientes_set))
+        # Filtro RUTA
+        self.crear_filtro_combobox(grid_frame, 'ruta', 'Ruta', lista_rutas, row, 0)
         
-        # Ensambles (opciones fijas)
-        lista_ensambles = ['Todos', 'SENCILLO', 'FULL']
+        # Filtro OPERADOR
+        self.crear_filtro_combobox(grid_frame, 'op', 'Operador', lista_operadores, row, 2)
         
-        # ==================== FILA 0: Ruta y Operador ====================
-        row = 0
+        # Filtro TRACTO
+        self.crear_filtro_combobox(grid_frame, 'track', 'Tracto', lista_tractos, row, 4)
         
-        # Filtro RUTA (con autocompletado)
-        self.crear_filtro_combobox(grid_frame, 'ruta', 'Ruta', lista_rutas, row, 0, 
-                                width=80, autocomplete=True)
-        
-        # Filtro OPERADOR (con autocompletado)
-        self.crear_filtro_combobox(grid_frame, 'op', 'Operador', lista_operadores, row, 2, 
-                                width=70, autocomplete=True)
-        
-        # ==================== FILA 1: Tracto, Cliente y Ensamble ====================
+        # ==================== FILA 1: Rango de fechas ====================
         row = 1
         
-        # Filtro TRACTO (con autocompletado)
-        self.crear_filtro_combobox(grid_frame, 'track', 'Tracto', lista_tractos, row, 0, 
-                                width=20, autocomplete=True)
-        
-        # Filtro CLIENTE (con autocompletado)
-        self.crear_filtro_combobox(grid_frame, 'cliente', 'Cliente', lista_clientes, row, 2, 
-                                width=50, autocomplete=True)
-        
-        
-        # ==================== FILA 2: Rango de fechas CON CALENDARIO ====================
-        row = 2
-        
-        # Filtro ENSAMBLE (sin autocompletado)
-        self.crear_filtro_combobox(grid_frame, 'ensamble', 'Ensamble', lista_ensambles, row, 2, 
-                                width=18, autocomplete=False)
-
         # Checkbox para activar filtro de fecha
         var_fecha_activo = tk.BooleanVar(value=False)
         self.filtro_activo['fecha'] = var_fecha_activo
@@ -839,63 +681,34 @@ class AplicacionViajes:
                                     command=self.toggle_filtro)
         check_fecha.grid(row=row, column=0, sticky=tk.W, padx=(0, 5), pady=5)
         
-        # Frame para los dos calendarios
+        # Frame para las dos fechas
         fecha_frame = ttk.Frame(grid_frame)
-        fecha_frame.grid(row=row, column=1, columnspan=5, sticky=tk.W, pady=5)
+        fecha_frame.grid(row=row, column=1, columnspan=3, sticky=tk.W, pady=5)
         
-        if TKCALENDAR_AVAILABLE:
-            # ===== FECHA INICIAL CON CALENDARIO =====
-            ttk.Label(fecha_frame, text="Desde:").pack(side=tk.LEFT, padx=(0, 5))
-            
-            # DateEntry para fecha inicial
-            self.date_inicio = DateEntry(fecha_frame, 
-                                        width=15,
-                                        background='darkblue',
-                                        foreground='white',
-                                        borderwidth=2,
-                                        date_pattern='yyyy-mm-dd',  # Formato de fecha
-                                        state='disabled')
-            self.date_inicio.pack(side=tk.LEFT, padx=(0, 15))
-            self.filtro_calendarios['fecha_inicio'] = self.date_inicio
-            
-            # ===== FECHA FINAL CON CALENDARIO =====
-            ttk.Label(fecha_frame, text="Hasta:").pack(side=tk.LEFT, padx=(0, 5))
-            
-            # DateEntry para fecha final
-            self.date_final = DateEntry(fecha_frame,
-                                    width=15,
-                                    background='darkblue',
-                                    foreground='white',
-                                    borderwidth=2,
-                                    date_pattern='yyyy-mm-dd',
-                                    state='disabled')
-            self.date_final.pack(side=tk.LEFT)
-            self.filtro_calendarios['fecha_final'] = self.date_final
-            
-        else:
-            # FALLBACK: Si no está instalado tkcalendar, usar Entry normal
-            ttk.Label(fecha_frame, text="Desde:").pack(side=tk.LEFT, padx=(0, 5))
-            var_fecha_inicio = tk.StringVar()
-            self.filtro_valor['fecha_inicio'] = var_fecha_inicio
-            entry_fecha_inicio = ttk.Entry(fecha_frame, textvariable=var_fecha_inicio, 
-                                        width=12, state=tk.DISABLED)
-            entry_fecha_inicio.pack(side=tk.LEFT, padx=(0, 10))
-            entry_fecha_inicio.filtro_key = 'fecha'
-            self.filtro_entries['fecha_inicio'] = entry_fecha_inicio
-            
-            ttk.Label(fecha_frame, text="Hasta:").pack(side=tk.LEFT, padx=(0, 5))
-            var_fecha_final = tk.StringVar()
-            self.filtro_valor['fecha_final'] = var_fecha_final
-            entry_fecha_final = ttk.Entry(fecha_frame, textvariable=var_fecha_final, 
-                                        width=12, state=tk.DISABLED)
-            entry_fecha_final.pack(side=tk.LEFT)
-            entry_fecha_final.filtro_key = 'fecha'
-            self.filtro_entries['fecha_final'] = entry_fecha_final
-            
-            ttk.Label(fecha_frame, text="(YYYY-MM-DD)", foreground='#666').pack(side=tk.LEFT, padx=(5, 0))
+        # Fecha inicial
+        ttk.Label(fecha_frame, text="Desde:").pack(side=tk.LEFT, padx=(0, 5))
+        var_fecha_inicio = tk.StringVar()
+        self.filtro_valor['fecha_inicio'] = var_fecha_inicio
+        entry_fecha_inicio = ttk.Entry(fecha_frame, textvariable=var_fecha_inicio, 
+                                    width=12, state=tk.DISABLED)
+        entry_fecha_inicio.pack(side=tk.LEFT, padx=(0, 10))
+        entry_fecha_inicio.filtro_key = 'fecha'
+        self.filtro_entries['fecha_inicio'] = entry_fecha_inicio
         
-        # ==================== FILA 3: Filtros de Estado (checkboxes) ====================
-        row = 3
+        # Fecha final
+        ttk.Label(fecha_frame, text="Hasta:").pack(side=tk.LEFT, padx=(0, 5))
+        var_fecha_final = tk.StringVar()
+        self.filtro_valor['fecha_final'] = var_fecha_final
+        entry_fecha_final = ttk.Entry(fecha_frame, textvariable=var_fecha_final, 
+                                    width=12, state=tk.DISABLED)
+        entry_fecha_final.pack(side=tk.LEFT)
+        entry_fecha_final.filtro_key = 'fecha'
+        self.filtro_entries['fecha_final'] = entry_fecha_final
+        
+        ttk.Label(fecha_frame, text="(YYYY-MM-DD)", foreground='#666').pack(side=tk.LEFT, padx=(5, 0))
+        
+        # ==================== FILA 2: Filtros de Estado (checkboxes) ====================
+        row = 2
         
         # Label para la sección
         ttk.Label(grid_frame, text="Estado:", font=('TkDefaultFont', 9, 'bold')).grid(
@@ -903,7 +716,7 @@ class AplicacionViajes:
         )
         
         estado_frame = ttk.Frame(grid_frame)
-        estado_frame.grid(row=row, column=1, columnspan=5, sticky=tk.W, pady=5)
+        estado_frame.grid(row=row, column=1, columnspan=3, sticky=tk.W, pady=5)
         
         # Checkbox IRREAL
         var_irreal = tk.BooleanVar(value=False)
@@ -917,28 +730,7 @@ class AplicacionViajes:
         self.filtro_valor['estado_err_com'] = var_err_com
         check_err_com = ttk.Checkbutton(estado_frame, text="ERR. COM", 
                                     variable=var_err_com)
-        check_err_com.pack(side=tk.LEFT, padx=(0, 15))
-        
-        # Checkbox ANALIZAR 1
-        var_analizar1 = tk.BooleanVar(value=False)
-        self.filtro_valor['estado_analizar1'] = var_analizar1
-        check_analizar1 = ttk.Checkbutton(estado_frame, text="ANALIZAR 1", 
-                                        variable=var_analizar1)
-        check_analizar1.pack(side=tk.LEFT, padx=(0, 15))
-        
-        # Checkbox ANALIZAR 2
-        var_analizar2 = tk.BooleanVar(value=False)
-        self.filtro_valor['estado_analizar2'] = var_analizar2
-        check_analizar2 = ttk.Checkbutton(estado_frame, text="ANALIZAR 2", 
-                                        variable=var_analizar2)
-        check_analizar2.pack(side=tk.LEFT, padx=(0, 15))
-        
-        # Checkbox ANALIZAR 3
-        var_analizar3 = tk.BooleanVar(value=False)
-        self.filtro_valor['estado_analizar3'] = var_analizar3
-        check_analizar3 = ttk.Checkbutton(estado_frame, text="ANALIZAR 3", 
-                                        variable=var_analizar3)
-        check_analizar3.pack(side=tk.LEFT)
+        check_err_com.pack(side=tk.LEFT)
         
         # ==================== BOTONES DE ACCIÓN ====================
         btn_frame = ttk.Frame(filtros_frame)
@@ -962,9 +754,8 @@ class AplicacionViajes:
                             foreground='#666')
         info_label.pack(side=tk.RIGHT, padx=10)
 
-    def crear_filtro_combobox(self, parent, key, label, valores, row, col, width=18, 
-                         autocomplete=False):  # NUEVO parámetro
-        """Helper para crear un filtro con combobox (opcionalmente con autocompletado)"""
+    def crear_filtro_combobox(self, parent, key, label, valores, row, col):
+        """Helper para crear un filtro con combobox inteligente"""
         # Checkbox para activar
         var_activo = tk.BooleanVar(value=False)
         self.filtro_activo[key] = var_activo
@@ -974,25 +765,15 @@ class AplicacionViajes:
                             command=self.toggle_filtro)
         check.grid(row=row, column=col, sticky=tk.W, padx=(0, 5), pady=5)
         
-        # Combobox para valor (con o sin autocompletado)
+        # Combobox para valor
         var_valor = tk.StringVar()
         self.filtro_valor[key] = var_valor
         
-        if autocomplete:
-            # Usar AutocompleteCombobox para filtros con autocompletado
-            combo = AutocompleteCombobox(parent, completevalues=valores,
-                                        textvariable=var_valor,
-                                        state='disabled', width=width)
-        else:
-            # Usar Combobox normal para los demás
-            combo = ttk.Combobox(parent, textvariable=var_valor, values=valores,
-                                state='disabled', width=width)
-        
+        combo = ttk.Combobox(parent, textvariable=var_valor, values=valores,
+                            state='disabled', width=18)
         combo.grid(row=row, column=col+1, sticky=tk.W, padx=(0, 15), pady=5)
         combo.filtro_key = key
-        
-        if not autocomplete:
-            combo.set('Todos')  # Solo para combobox normal
+        combo.set('Todos')  # Valor por defecto
         
         self.filtro_combos[key] = combo
     
@@ -1395,52 +1176,26 @@ class AplicacionViajes:
     def toggle_filtro(self):
         """Habilita/deshabilita controles según checkboxes"""
         # Filtros con combobox
-        for key in ['ruta', 'op', 'track', 'cliente', 'ensamble']:
+        for key in ['ruta', 'op', 'track']:
             if key in self.filtro_activo and key in self.filtro_combos:
                 combo = self.filtro_combos[key]
                 if self.filtro_activo[key].get():
-                    combo.config(state='normal')
+                    combo.config(state='readonly')
                 else:
                     combo.config(state='disabled')
-                    if isinstance(combo, AutocompleteCombobox):
-                        combo.set('')
-                        combo['values'] = combo._completevalues
-                    else:
-                        combo.set('Todos')
+                    combo.set('Todos')
         
-        # Filtro de fecha (con calendario o entry)
+        # Filtro de fecha (rango)
         if 'fecha' in self.filtro_activo:
             activo = self.filtro_activo['fecha'].get()
+            estado = tk.NORMAL if activo else tk.DISABLED
             
-            if TKCALENDAR_AVAILABLE and hasattr(self, 'filtro_calendarios'):
-                # Usar DateEntry
-                estado = 'normal' if activo else 'disabled'
-                
-                if 'fecha_inicio' in self.filtro_calendarios:
-                    self.filtro_calendarios['fecha_inicio'].config(state=estado)
-                if 'fecha_final' in self.filtro_calendarios:
-                    self.filtro_calendarios['fecha_final'].config(state=estado)
-                
-                if not activo:
-                    # Resetear a fecha actual
-                    if hasattr(self, 'date_inicio'):
-                        self.date_inicio.set_date(datetime.now())
-                    if hasattr(self, 'date_final'):
-                        self.date_final.set_date(datetime.now())
-            else:
-                # Fallback a Entry normal
-                estado = tk.NORMAL if activo else tk.DISABLED
-                
-                if 'fecha_inicio' in self.filtro_entries:
-                    self.filtro_entries['fecha_inicio'].config(state=estado)
-                if 'fecha_final' in self.filtro_entries:
-                    self.filtro_entries['fecha_final'].config(state=estado)
-                
-                if not activo:
-                    if 'fecha_inicio' in self.filtro_valor:
-                        self.filtro_valor['fecha_inicio'].set('')
-                    if 'fecha_final' in self.filtro_valor:
-                        self.filtro_valor['fecha_final'].set('')
+            self.filtro_entries['fecha_inicio'].config(state=estado)
+            self.filtro_entries['fecha_final'].config(state=estado)
+            
+            if not activo:
+                self.filtro_valor['fecha_inicio'].set('')
+                self.filtro_valor['fecha_final'].set('')
     
     def aplicar_filtros_consulta(self):
         """Aplica los filtros activos y muestra resultados"""
@@ -1448,119 +1203,63 @@ class AplicacionViajes:
         
         from core_viajes import enriquecer_viajes_con_casetas
         
-        # CORREGIDO: Obtener todos los viajes CON sus IDs incluidos
-        viajes_filtrados = []
+        # Obtener todos los viajes
+        todos_viajes = []
         for id_viaje, datos_viaje in self.db_manager.data['viajes'].items():
-            viaje_con_id = {'id_viaje': id_viaje, **datos_viaje}
-            viajes_filtrados.append(viaje_con_id)
+            viaje = datos_viaje.copy()
+            viaje['id_viaje'] = id_viaje
+            todos_viajes.append(viaje)
         
-        # NUEVA VALIDACIÓN: Verificar que los valores de autocompletado sean válidos
-        filtros_autocomplete = ['ruta', 'op', 'track', 'cliente']
-        
-        for key in filtros_autocomplete:
-            if self.filtro_activo.get(key, tk.BooleanVar()).get():
-                valor = self.filtro_valor[key].get().strip()
-                if valor:
-                    combo = self.filtro_combos[key]
-                    if isinstance(combo, AutocompleteCombobox):
-                        # Verificar que el valor esté en la lista de opciones
-                        if valor not in combo._completevalues:
-                            messagebox.showwarning("Filtro inválido", 
-                                                f"El valor '{valor}' no es válido para {key.upper()}.\n"
-                                                "Selecciona un valor de la lista desplegable.")
-                            self.actualizar_estado("Filtro inválido")
-                            return
+        # Aplicar filtros de texto
+        viajes_filtrados = todos_viajes
         
         # Filtro RUTA
         if self.filtro_activo.get('ruta', tk.BooleanVar()).get():
             ruta_buscar = self.filtro_valor['ruta'].get().strip()
-            if ruta_buscar:
+            if ruta_buscar and ruta_buscar != 'Todos':
                 viajes_filtrados = [v for v in viajes_filtrados 
                                 if str(v.get('ruta', '')) == ruta_buscar]
         
         # Filtro OPERADOR
         if self.filtro_activo.get('op', tk.BooleanVar()).get():
             op_buscar = self.filtro_valor['op'].get().strip()
-            if op_buscar:
+            if op_buscar and op_buscar != 'Todos':
                 viajes_filtrados = [v for v in viajes_filtrados 
                                 if str(v.get('operador', '')) == op_buscar]
         
         # Filtro TRACTO
         if self.filtro_activo.get('track', tk.BooleanVar()).get():
             track_buscar = self.filtro_valor['track'].get().strip()
-            if track_buscar:
+            if track_buscar and track_buscar != 'Todos':
                 viajes_filtrados = [v for v in viajes_filtrados 
                                 if str(v.get('tracto', '')) == track_buscar]
         
-        # Filtro CLIENTE
-        if self.filtro_activo.get('cliente', tk.BooleanVar()).get():
-            cliente_buscar = self.filtro_valor['cliente'].get().strip()
-            if cliente_buscar:
-                viajes_filtrados_temp = []
-                rutas_db = self.db_manager.obtener_todas_rutas()
-                
-                ruta_cliente_map = {}
-                for ruta in rutas_db:
-                    ruta_cliente_map[ruta.get('id_ruta')] = ruta.get('cliente', '')
-                
-                for v in viajes_filtrados:
-                    id_ruta = v.get('id_ruta') or v.get('ruta')
-                    if id_ruta and ruta_cliente_map.get(id_ruta, '') == cliente_buscar:
-                        viajes_filtrados_temp.append(v)
-                
-                viajes_filtrados = viajes_filtrados_temp
-        
-        # Filtro ENSAMBLE
-        if self.filtro_activo.get('ensamble', tk.BooleanVar()).get():
-            ensamble_buscar = self.filtro_valor['ensamble'].get().strip()
-            if ensamble_buscar and ensamble_buscar != 'Todos':
-                viajes_filtrados = [v for v in viajes_filtrados 
-                                if str(v.get('ensamble', '')).upper() == ensamble_buscar]
-        
-        # Filtro FECHA
+        # Filtro RANGO DE FECHAS
         if self.filtro_activo.get('fecha', tk.BooleanVar()).get():
-            if TKCALENDAR_AVAILABLE and hasattr(self, 'date_inicio') and hasattr(self, 'date_final'):
-                # Obtener fechas desde DateEntry
+            fecha_inicio_str = self.filtro_valor['fecha_inicio'].get().strip()
+            fecha_final_str = self.filtro_valor['fecha_final'].get().strip()
+            
+            if fecha_inicio_str or fecha_final_str:
                 try:
-                    fecha_inicio = pd.to_datetime(self.date_inicio.get_date())
-                    fecha_final = pd.to_datetime(self.date_final.get_date())
+                    # Convertir strings a datetime
+                    if fecha_inicio_str:
+                        fecha_inicio = pd.to_datetime(fecha_inicio_str)
+                    else:
+                        fecha_inicio = pd.Timestamp.min
                     
-                    if fecha_final < fecha_inicio:
-                        messagebox.showerror("Error en fechas", 
-                                        "La fecha final no puede ser anterior a la fecha de inicio")
-                        self.actualizar_estado("Error en fechas")
-                        return
+                    if fecha_final_str:
+                        fecha_final = pd.to_datetime(fecha_final_str)
+                    else:
+                        fecha_final = pd.Timestamp.max
                     
                     # Filtrar viajes cuya fecha_inicio esté en el rango
                     viajes_filtrados = [v for v in viajes_filtrados 
-                                    if fecha_inicio <= pd.to_datetime(v.get('fecha_inicio', pd.Timestamp.min)) <= fecha_final]
+                                       if fecha_inicio <= pd.to_datetime(v.get('fecha_inicio', pd.Timestamp.min)) <= fecha_final]
                 except Exception as e:
-                    messagebox.showerror("Error en fechas", f"Error procesando fechas:\n{e}")
-                    self.actualizar_estado("Error en fechas")
+                    messagebox.showerror("Error en fechas", 
+                                       f"Formato de fecha inválido.\nUsa: YYYY-MM-DD\n\nError: {e}")
+                    self.actualizar_estado("Error en formato de fechas")
                     return
-            else:
-                # Fallback a Entry normal
-                fecha_inicio_str = self.filtro_valor.get('fecha_inicio', tk.StringVar()).get().strip()
-                fecha_final_str = self.filtro_valor.get('fecha_final', tk.StringVar()).get().strip()
-                
-                if fecha_inicio_str and fecha_final_str:
-                    try:
-                        fecha_inicio = pd.to_datetime(fecha_inicio_str)
-                        fecha_final = pd.to_datetime(fecha_final_str)
-                        
-                        if fecha_final < fecha_inicio:
-                            messagebox.showerror("Error en fechas", 
-                                            "La fecha final no puede ser anterior a la fecha de inicio")
-                            self.actualizar_estado("Error en fechas")
-                            return
-                        
-                        viajes_filtrados = [v for v in viajes_filtrados 
-                                        if fecha_inicio <= pd.to_datetime(v.get('fecha_inicio', pd.Timestamp.min)) <= fecha_final]
-                    except Exception as e:
-                        messagebox.showerror("Error en fechas", 
-                                        f"Formato de fecha inválido.\nUsa: YYYY-MM-DD\n\nError: {e}")
-                        self.actualizar_estado("Error en formato de fechas")
-                        return
         
         # Filtro ESTADO (checkboxes)
         estados_buscados = []
@@ -1568,16 +1267,10 @@ class AplicacionViajes:
             estados_buscados.append('IRREAL')
         if self.filtro_valor.get('estado_err_com', tk.BooleanVar()).get():
             estados_buscados.append('ERR. COM')
-        if self.filtro_valor.get('estado_analizar1', tk.BooleanVar()).get():
-            estados_buscados.append('ANALIZAR 1')
-        if self.filtro_valor.get('estado_analizar2', tk.BooleanVar()).get():
-            estados_buscados.append('ANALIZAR 2')
-        if self.filtro_valor.get('estado_analizar3', tk.BooleanVar()).get():
-            estados_buscados.append('ANALIZAR 3')
         
         if estados_buscados:
             viajes_filtrados = [v for v in viajes_filtrados 
-                            if any(estado in v.get('advertencias', []) for estado in estados_buscados)]
+                               if any(estado in v.get('advertencias', []) for estado in estados_buscados)]
         
         # Enriquecer con casetas
         self.actualizar_estado("Calculando estadísticas...")
@@ -1591,51 +1284,26 @@ class AplicacionViajes:
     def limpiar_filtros_consulta(self):
         """Limpia todos los filtros"""
         # Limpiar filtros con combobox
-        for key in ['ruta', 'op', 'track', 'cliente', 'ensamble']:
+        for key in ['ruta', 'op', 'track']:
             if key in self.filtro_activo:
                 self.filtro_activo[key].set(False)
                 if key in self.filtro_combos:
-                    combo = self.filtro_combos[key]
-                    combo.config(state='disabled')
-                    
-                    if isinstance(combo, AutocompleteCombobox):
-                        combo.set('')
-                        combo['values'] = combo._completevalues
-                    else:
-                        combo.set('Todos')
+                    self.filtro_combos[key].config(state='disabled')
+                    self.filtro_combos[key].set('Todos')
         
         # Limpiar filtro de fecha
         if 'fecha' in self.filtro_activo:
             self.filtro_activo['fecha'].set(False)
-            
-            if TKCALENDAR_AVAILABLE and hasattr(self, 'date_inicio') and hasattr(self, 'date_final'):
-                # Resetear DateEntry
-                self.date_inicio.config(state='disabled')
-                self.date_final.config(state='disabled')
-                self.date_inicio.set_date(datetime.now())
-                self.date_final.set_date(datetime.now())
-            else:
-                # Fallback a Entry
-                if 'fecha_inicio' in self.filtro_valor:
-                    self.filtro_valor['fecha_inicio'].set('')
-                if 'fecha_final' in self.filtro_valor:
-                    self.filtro_valor['fecha_final'].set('')
-                if 'fecha_inicio' in self.filtro_entries:
-                    self.filtro_entries['fecha_inicio'].config(state=tk.DISABLED)
-                if 'fecha_final' in self.filtro_entries:
-                    self.filtro_entries['fecha_final'].config(state=tk.DISABLED)
+            self.filtro_valor['fecha_inicio'].set('')
+            self.filtro_valor['fecha_final'].set('')
+            self.filtro_entries['fecha_inicio'].config(state=tk.DISABLED)
+            self.filtro_entries['fecha_final'].config(state=tk.DISABLED)
         
         # Limpiar filtros de estado
         if 'estado_irreal' in self.filtro_valor:
             self.filtro_valor['estado_irreal'].set(False)
         if 'estado_err_com' in self.filtro_valor:
             self.filtro_valor['estado_err_com'].set(False)
-        if 'estado_analizar1' in self.filtro_valor:
-            self.filtro_valor['estado_analizar1'].set(False)
-        if 'estado_analizar2' in self.filtro_valor:
-            self.filtro_valor['estado_analizar2'].set(False)
-        if 'estado_analizar3' in self.filtro_valor:
-            self.filtro_valor['estado_analizar3'].set(False)
         
         self.actualizar_estado("Filtros limpiados")
     
@@ -2609,12 +2277,12 @@ class FormularioViaje:
         # Si hay errores, mostrar y no guardar
         if todos_errores:
             messagebox.showerror("Errores de Validación", 
-                            "Se encontraron errores:\n" + "\n".join(todos_errores))
+                               "Se encontraron errores:\n" + "\n".join(todos_errores))
             return
         
         # Confirmar guardado
         if not messagebox.askyesno("Confirmar", 
-                                f"¿Guardar {len(viajes_validos)} viaje(s)?"):
+                                   f"¿Guardar {len(viajes_validos)} viaje(s)?"):
             return
         
         # Guardar en la base de datos
@@ -2648,31 +2316,23 @@ class FormularioViaje:
                     datos_viaje['comision'] = float(viaje['comision'].replace(',', ''))
                 
                 # Crear ID de ruta si es posible
+                # El ID de ruta ya viene del formulario
                 datos_viaje['id_ruta'] = viaje['ruta']
                 
                 # Agregar a la BD
                 self.db_manager.agregar_viaje(viaje['id_viaje'], datos_viaje)
             
-            # NUEVO ORDEN: Primero detectar dobles
-            from core_viajes import detectar_viajes_dobles
-            detectar_viajes_dobles(self.db_manager)
-            
-            # Luego recalcular relaciones (que ya ignora IRREAL y DOBLE)
+            # Recalcular relaciones con casetas para los nuevos viajes
             messagebox.showinfo("Procesando", 
-                            "Viajes guardados. Calculando relaciones con casetas...")
+                              "Viajes guardados. Calculando relaciones con casetas...")
             
             self.recalcular_relaciones_nuevos_viajes([v['id_viaje'] for v in viajes_validos])
             
-            # Detectar estados de análisis
-            from core_viajes import detectar_estados_analisis, marcar_viajes_finales
-            detectar_estados_analisis(self.db_manager)
-            marcar_viajes_finales(self.db_manager)
-            
-            # Finalmente guardar BD
+            # Guardar BD
             self.db_manager.guardar_datos()
             
             messagebox.showinfo("Éxito", 
-                            f"{len(viajes_validos)} viaje(s) guardado(s) exitosamente")
+                              f"{len(viajes_validos)} viaje(s) guardado(s) exitosamente")
             
             self.ventana.destroy()
             
@@ -2687,21 +2347,7 @@ class FormularioViaje:
         indices = IndicesCasetas()
         indices.construir_desde_db(self.db_manager.data['casetas'])
         
-        # Filtrar solo viajes válidos (sin IRREAL ni DOBLE)
-        ids_viajes_validos = []
-        
         for id_viaje in ids_viajes:
-            datos_viaje = self.db_manager.data['viajes'][id_viaje]
-            advertencias = datos_viaje.get('advertencias', [])
-            
-            # Ignorar viajes IRREAL o DOBLE
-            if 'IRREAL' in advertencias or 'DOBLE' in advertencias:
-                continue
-            
-            ids_viajes_validos.append(id_viaje)
-        
-        # Procesar solo viajes válidos
-        for id_viaje in ids_viajes_validos:
             datos_viaje = self.db_manager.data['viajes'][id_viaje]
             tracto = datos_viaje.get('tracto')
             
@@ -2714,7 +2360,7 @@ class FormularioViaje:
             except:
                 continue
             
-            # Buscar casetas dentro del rango
+            # Buscar casetas
             ids_casetas = indices.buscar_por_rango(tracto, fecha_inicio, fecha_final)
             
             for id_caseta in ids_casetas:

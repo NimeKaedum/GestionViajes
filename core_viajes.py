@@ -10,429 +10,6 @@ from datetime import datetime
 import hashlib
 import bisect
 import time
-
-##############################Funciones version 17###################################################################################################
-##############################Funciones version 17###################################################################################################
-##############################Funciones version 17###################################################################################################
-
-def detectar_subtipo_monitoreo(data):
-    """
-    Detecta si el Excel de monitoreo es formato viejo o nuevo.
-    
-    Formato viejo: "Reporte Monitoreo" en A3 (celda[2][0])
-    Formato nuevo: "Reporte de monitoreo" en D1 (celda[0][3])
-    
-    Retorna: 'viejo', 'nuevo', o None si no se puede determinar
-    """
-    try:
-        # Verificar formato nuevo (D1 = fila 0, columna 3)
-        if len(data) > 0 and len(data[0]) > 3:
-            celda_d1 = str(data[0][3]).strip().lower()
-            if 'reporte de monitoreo' in celda_d1:
-                return 'nuevo'
-        
-        # Verificar formato viejo (A3 = fila 2, columna 0)
-        if len(data) > 2:
-            celda_a3 = str(data[2][0]).strip().lower()
-            if 'reporte monitoreo' in celda_a3:
-                return 'viejo'
-        
-        return None
-    except:
-        return None
-    
-def detectar_subtipo_apertura_cierre(data):
-    """
-    Detecta si el Excel de apertura/cierre es formato viejo o nuevo.
-    
-    Formato viejo: "Reporte Apertura/Cierre Viajes" en A3 (celda[2][0])
-    Formato nuevo: "Reporte de apertura y cierre de viajes" en D1 (celda[0][3])
-    
-    Retorna: 'viejo', 'nuevo', o None si no se puede determinar
-    """
-    try:
-        # Verificar formato nuevo (D1 = fila 0, columna 3)
-        if len(data) > 0 and len(data[0]) > 3:
-            celda_d1 = str(data[0][3]).strip().lower()
-            if 'reporte de apertura y cierre' in celda_d1:
-                return 'nuevo'
-        
-        # Verificar formato viejo (A3 = fila 2, columna 0)
-        if len(data) > 2:
-            celda_a3 = str(data[2][0]).strip().lower()
-            if 'apertura/cierre' in celda_a3 or 'apertura cierre' in celda_a3:
-                return 'viejo'
-        
-        return None
-    except:
-        return None
-    
-#def estandarizar_monitoreo(data, subtipo):
-def estandarizar_monitoreo(data, subtipo, verbose=False):
-    """
-    Convierte el 'monitoreo nuevo' a formato donde SOLO las fuentes 16 y 18
-    quedan como strings formateados '%m/%d/%y %I:%M:%S %p' cuando sea posible.
-    Las demás columnas se copian tal cual (no se parsean).
-    """
-    if subtipo == 'viejo':
-        return data
-    if subtipo != 'nuevo':
-        if verbose:
-            print("⚠️ Subtipo desconocido, retornando sin cambios")
-        return data
-
-    mapeo_columnas = {0:0, 5:3, 8:6, 10:8, 16:14, 18:16}
-    parse_sources = {16, 18}  # solo estos índices fuente se normalizan a string
-
-    max_dest = max(mapeo_columnas.values())
-    fila_len = max_dest + 4  # p.ej. 20
-
-    salida = []
-    # Copiar filas previas al header nuevo (0..2)
-    for i in range(min(3, len(data))):
-        salida.append(list(data[i]))
-
-    for fila_idx in range(3, len(data)):
-        fila_original = data[fila_idx]
-        if verbose:
-            print(f"\n[ESTANDARIZACIÓN] fila {fila_idx} (len={len(fila_original)})")
-
-        valores_fuente = {}
-        for src_idx in sorted(mapeo_columnas.keys()):
-            raw = fila_original[src_idx] if src_idx < len(fila_original) else None
-
-            # Solo normalizamos/formateamos 16 y 18:
-            if src_idx in parse_sources:
-                dt_obj = None
-                # Si ya es pandas.Timestamp -> pydatetime
-                if isinstance(raw, pd.Timestamp):
-                    dt_obj = raw.to_pydatetime()
-                # Si es objeto datetime
-                elif isinstance(raw, datetime):
-                    dt_obj = raw
-                # Si es string, intentar parsear con pandas (flexible)
-                elif isinstance(raw, str):
-                    parsed = pd.to_datetime(raw, errors='coerce', infer_datetime_format=True)
-                    if not pd.isna(parsed):
-                        dt_obj = parsed.to_pydatetime()
-                # Si pudimos obtener datetime, lo convertimos al string esperado
-                if dt_obj is not None:
-                    # Formato objetivo: MM/DD/AA HH:MM:SS AM/PM
-                    valores_fuente[src_idx] = dt_obj.strftime('%m/%d/%y %I:%M:%S %p')
-                    if verbose:
-                        print(f"  fuente {src_idx}: {repr(raw)} -> formateado: {valores_fuente[src_idx]}")
-                else:
-                    # No pudo parsearse: dejar tal cual (o usar ''/None si lo prefieres)
-                    valores_fuente[src_idx] = raw
-                    if verbose:
-                        print(f"  fuente {src_idx}: {repr(raw)} -> NO parseable, se deja tal cual")
-            else:
-                # No tocar otras columnas (copiar tal cual)
-                valores_fuente[src_idx] = raw
-                if verbose:
-                    print(f"  fuente {src_idx}: {repr(raw)} (no parseado)")
-
-        # Crear fila nueva limpia y sólo rellenar destinos
-        fila_nueva = [''] * fila_len
-        for src_idx, dest_idx in mapeo_columnas.items():
-            fila_nueva[dest_idx] = valores_fuente[src_idx]
-
-        salida.append(fila_nueva)
-
-    # Asegurar al menos 5 filas (mismo comportamiento previo)
-    while len(salida) < 5:
-        salida.append([''] * fila_len)
-
-    if verbose:
-        print(f"[ESTANDARIZACIÓN] filas en salida: {len(salida)}")
-    return salida
-
-def estandarizar_apertura_cierre(data, subtipo):
-    """
-    Estandariza Excel de apertura/cierre al formato viejo.
-    
-    Si ya es formato viejo, retorna sin cambios.
-    Si es formato nuevo, reorganiza filas (columnas son iguales).
-    
-    Formato viejo (objetivo):
-    - Header en fila 5 (índice 4)
-    - Columnas: ID=1, ClaveRuta=7, TipoEnsamble=11, Ensamble=12
-    
-    Formato nuevo (origen):
-    - Header en fila 4 (índice 3)
-    - Columnas: ID=1, ClaveRuta=7, TipoEnsamble=11, Ensamble=12 (iguales)
-    
-    Retorna: data estandarizada
-    """
-    if subtipo == 'viejo':
-        return data
-    
-    if subtipo != 'nuevo':
-        print("⚠️ Subtipo de apertura/cierre desconocido, retornando sin cambios")
-        return data
-    
-    print("[ESTANDARIZACIÓN] Convirtiendo apertura/cierre nuevo a formato estándar...")
-    
-    # Para apertura/cierre, las columnas son iguales, solo hay que ajustar filas
-    data_estandarizada = []
-    
-    # Copiar primeras 4 filas
-    for i in range(min(4, len(data))):
-        data_estandarizada.append(data[i][:])
-    
-    # Agregar fila vacía extra para que el header quede en fila 5 (índice 4)
-    data_estandarizada.append([''] * (len(data[0]) if len(data) > 0 else 20))
-    
-    # Copiar resto de datos (desde fila 3 del nuevo, que es el header)
-    for fila_idx in range(3, len(data)):
-        data_estandarizada.append(data[fila_idx][:])
-    
-    print(f"[ESTANDARIZACIÓN] Apertura/cierre convertido: {len(data_estandarizada)} filas")
-    return data_estandarizada
-##############################Funciones version 16###################################################################################################
-##############################Funciones version 16###################################################################################################
-##############################Funciones version 16###################################################################################################
-
-def marcar_viajes_finales(db_manager):
-    """
-    Marca el último viaje de cada tracto con el estado 'FINAL'.
-    
-    Criterios:
-    - Es el último viaje por fecha_final del tracto
-    - No puede ser un viaje IRREAL o DOBLE
-    - Solo un viaje por tracto puede tener este estado
-    """
-    print("\n[VERIFICACIÓN] Marcando últimos viajes por tracto...")
-    
-    # Agrupar viajes válidos por tracto
-    viajes_por_tracto = {}
-    
-    for id_viaje, datos_viaje in db_manager.data['viajes'].items():
-        tracto = datos_viaje.get('tracto')
-        if not tracto:
-            continue
-        
-        # Ignorar viajes IRREAL o DOBLE
-        advertencias = datos_viaje.get('advertencias', [])
-        if 'IRREAL' in advertencias or 'DOBLE' in advertencias:
-            continue
-        
-        # Parsear fecha final
-        try:
-            fecha_final = pd.to_datetime(datos_viaje['fecha_final'])
-        except:
-            continue
-        
-        if tracto not in viajes_por_tracto:
-            viajes_por_tracto[tracto] = []
-        
-        viajes_por_tracto[tracto].append({
-            'id_viaje': id_viaje,
-            'fecha_final': fecha_final,
-            'datos': datos_viaje
-        })
-    
-    # Marcar el último viaje de cada tracto
-    viajes_marcados = 0
-    
-    for tracto, viajes in viajes_por_tracto.items():
-        if not viajes:
-            continue
-        
-        # Ordenar por fecha_final y obtener el último
-        viajes.sort(key=lambda v: v['fecha_final'])
-        ultimo_viaje = viajes[-1]
-        
-        # Remover estado FINAL previo de todos los viajes del tracto
-        for viaje in viajes:
-            viaje['datos']['advertencias'] = [
-                adv for adv in viaje['datos'].get('advertencias', [])
-                if adv != 'FINAL'
-            ]
-        
-        # Añadir estado FINAL al último
-        if 'advertencias' not in ultimo_viaje['datos']:
-            ultimo_viaje['datos']['advertencias'] = []
-        
-        if 'FINAL' not in ultimo_viaje['datos']['advertencias']:
-            ultimo_viaje['datos']['advertencias'].append('FINAL')
-            viajes_marcados += 1
-    
-    print(f"[VERIFICACIÓN] {viajes_marcados} viaje(s) marcado(s) como FINAL ({len(viajes_por_tracto)} tractos)")
-    
-    return viajes_marcados
-
-def detectar_estados_analisis(db_manager):
-    """
-    Detecta viajes que requieren análisis basándose en la cantidad de casetas fuera.
-    
-    Criterios:
-    - Solo se marca si #casetas_fuera > #casetas_normales
-    - Analizar 1: diferencia <= 2 (1-2 casetas fuera adicionales)
-    - Analizar 2: diferencia <= 10 (3-10 casetas fuera adicionales)
-    - Analizar 3: diferencia > 10 (más de 10 casetas fuera adicionales)
-    
-    Estados mutuamente excluyentes.
-    """
-    print("\n[VERIFICACIÓN] Detectando viajes para análisis...")
-    
-    # Contar casetas por viaje
-    conteo_casetas = {}
-    
-    for rel in db_manager.data['relaciones']:
-        id_viaje = rel['id_viaje']
-        is_fuera = rel.get('is_fuera', False)
-        
-        if id_viaje not in conteo_casetas:
-            conteo_casetas[id_viaje] = {'normales': 0, 'fuera': 0}
-        
-        if is_fuera:
-            conteo_casetas[id_viaje]['fuera'] += 1
-        else:
-            conteo_casetas[id_viaje]['normales'] += 1
-    
-    # Detectar y marcar estados
-    analizar_1 = 0
-    analizar_2 = 0
-    analizar_3 = 0
-    
-    for id_viaje, conteo in conteo_casetas.items():
-        normales = conteo['normales']
-        fuera = conteo['fuera']
-        
-        # Solo marcar si hay más casetas fuera que normales
-        if fuera <= normales:
-            continue
-        
-        diferencia = fuera - normales
-        
-        # Determinar estado
-        if diferencia <= 2:
-            estado = 'ANALIZAR 1'
-            analizar_1 += 1
-        elif diferencia <= 10:
-            estado = 'ANALIZAR 2'
-            analizar_2 += 1
-        else:
-            estado = 'ANALIZAR 3'
-            analizar_3 += 1
-        
-        # Añadir estado al viaje
-        datos_viaje = db_manager.data['viajes'][id_viaje]
-        
-        if 'advertencias' not in datos_viaje:
-            datos_viaje['advertencias'] = []
-        
-        # Remover estados de análisis previos (son mutuamente excluyentes)
-        datos_viaje['advertencias'] = [
-            adv for adv in datos_viaje['advertencias'] 
-            if not adv.startswith('ANALIZAR')
-        ]
-        
-        # Añadir nuevo estado
-        if estado not in datos_viaje['advertencias']:
-            datos_viaje['advertencias'].append(estado)
-    
-    total_marcados = analizar_1 + analizar_2 + analizar_3
-    
-    if total_marcados > 0:
-        print(f"\n[VERIFICACIÓN] Viajes marcados para análisis: {total_marcados}")
-        print(f"  - ANALIZAR 1 (diferencia 1-2): {analizar_1}")
-        print(f"  - ANALIZAR 2 (diferencia 3-10): {analizar_2}")
-        print(f"  - ANALIZAR 3 (diferencia >10): {analizar_3}")
-    else:
-        print("[VERIFICACIÓN] No se detectaron viajes para análisis")
-    
-    return total_marcados
-
-def detectar_viajes_dobles(db_manager):
-    """
-    Detecta viajes del mismo tracto con diferencia de menos de 5 minutos entre fechas de inicio.
-    El segundo viaje (por fecha_inicio) se marca como 'DOBLE'.
-    
-    Criterio:
-    - Mismo tracto
-    - Diferencia entre fecha_inicio2 y fecha_inicio1 < 5 minutos
-    
-    Parámetros:
-    - db_manager: instancia de DatabaseManager
-    
-    Retorna: número de viajes marcados como DOBLE
-    """
-    print("\n[VERIFICACIÓN] Detectando viajes dobles (< 5 min)...")
-    
-    # Agrupar viajes por tracto con optimización
-    viajes_por_tracto = {}
-    
-    for id_viaje, datos_viaje in db_manager.data['viajes'].items():
-        tracto = datos_viaje.get('tracto')
-        if not tracto:
-            continue
-        
-        # Parsear fechas
-        try:
-            fecha_inicio = pd.to_datetime(datos_viaje['fecha_inicio'])
-            fecha_final = pd.to_datetime(datos_viaje['fecha_final'])
-        except:
-            continue
-        
-        if tracto not in viajes_por_tracto:
-            viajes_por_tracto[tracto] = []
-        
-        viajes_por_tracto[tracto].append({
-            'id_viaje': id_viaje,
-            'fecha_inicio': fecha_inicio,
-            'fecha_final': fecha_final,
-            'datos': datos_viaje
-        })
-    
-    # Detectar viajes con diferencia < 5 minutos
-    viajes_dobles = []
-    umbral = timedelta(minutes=5)
-    
-    for tracto, viajes in viajes_por_tracto.items():
-        # Ordenar por fecha_inicio
-        viajes.sort(key=lambda x: x['fecha_inicio'])
-        
-        # Comparar viajes consecutivos (optimización)
-        for i in range(len(viajes) - 1):
-            viaje1 = viajes[i]
-            viaje2 = viajes[i + 1]
-            
-            # Si alguno ya está marcado como DOBLE o IRREAL, saltar
-            if 'DOBLE' in viaje1['datos'].get('advertencias', []) or \
-               'IRREAL' in viaje1['datos'].get('advertencias', []):
-                continue
-            
-            if 'DOBLE' in viaje2['datos'].get('advertencias', []) or \
-               'IRREAL' in viaje2['datos'].get('advertencias', []):
-                continue
-            
-            # Calcular diferencia de tiempo entre fechas de inicio
-            diferencia = viaje2['fecha_inicio'] - viaje1['fecha_inicio']
-            
-            # Si la diferencia es menor a 5 minutos, marcar el segundo como DOBLE
-            if diferencia < umbral:
-                if 'advertencias' not in viaje2['datos']:
-                    viaje2['datos']['advertencias'] = []
-                
-                if 'DOBLE' not in viaje2['datos']['advertencias']:
-                    viaje2['datos']['advertencias'].append('DOBLE')
-                    viajes_dobles.append(viaje2['id_viaje'])
-                    
-                    print(f"  ⚠️  Viaje DOBLE detectado:")
-                    print(f"     Tracto: {tracto}")
-                    print(f"     Viaje 1: {viaje1['id_viaje']} (inicio: {viaje1['fecha_inicio']})")
-                    print(f"     Viaje 2: {viaje2['id_viaje']} (inicio: {viaje2['fecha_inicio']})")
-                    print(f"     Diferencia: {diferencia.total_seconds()/60:.1f} minutos")
-    
-    if viajes_dobles:
-        print(f"\n[VERIFICACIÓN] {len(viajes_dobles)} viaje(s) marcado(s) como DOBLE")
-    else:
-        print("[VERIFICACIÓN] No se detectaron viajes dobles")
-    
-    return len(viajes_dobles)
-
 ##############################Funciones version 15###################################################################################################
 ##############################Funciones version 15###################################################################################################
 ##############################Funciones version 15###################################################################################################
@@ -2223,16 +1800,15 @@ def construir_base_datos_desde_excels(datamon, datacas, dataayc, datagastos,
             operador = viaje_row[mon_operador_col] if len(viaje_row) > mon_operador_col and not pd.isna(viaje_row[mon_operador_col]) else None
             
             if fecha_salida is None or fecha_llegada is None:
-                print(f"Decadencia: {idx}, {id_viaje}, {tracto_mon}, {ruta}, {operador}, {fecha_salida}, {fecha_llegada}")
                 continue
             
             # Inicializar advertencias
             advertencias = []
             
-            # CAMBIO: Verificar si es irreal (duración < 10 minutos)
+            # Verificar si es irreal (duración < 30 minutos)
             try:
                 duracion = fecha_llegada - fecha_salida
-                if pd.isna(duracion) or duracion < timedelta(minutes=10):
+                if pd.isna(duracion) or duracion < timedelta(minutes=30):
                     advertencias.append('IRREAL')
             except:
                 advertencias.append('IRREAL')
@@ -2314,10 +1890,6 @@ def construir_base_datos_desde_excels(datamon, datacas, dataayc, datagastos,
     else:
         print("[DB] No hay datos de casetas para procesar")
     
-    # NUEVO PASO 2.5: Detectar viajes dobles ANTES de crear relaciones
-    if len(db_manager.data['viajes']) > 0:
-        detectar_viajes_dobles(db_manager)
-    
     # PASO 3: Crear relaciones viaje-caseta OPTIMIZADO
     if len(db_manager.data['viajes']) > 0 and len(db_manager.data['casetas']) > 0:
         print("[DB] Procesando relaciones viaje-caseta (optimizado)...")
@@ -2357,7 +1929,6 @@ def construir_base_datos_desde_excels(datamon, datacas, dataayc, datagastos,
         # Procesar viajes
         relaciones_creadas = 0
         viajes_sin_casetas = 0
-        viajes_omitidos = 0
         
         total_procesar = len(viajes_a_procesar)
         procesados = 0
@@ -2368,13 +1939,6 @@ def construir_base_datos_desde_excels(datamon, datacas, dataayc, datagastos,
                 print(f"[PROGRESO] {procesados}/{total_procesar} viajes", end='\r', flush=True)
             
             datos_viaje = db_manager.data['viajes'][id_viaje]
-            
-            # NUEVO: Ignorar viajes IRREAL y DOBLE
-            advertencias = datos_viaje.get('advertencias', [])
-            if 'IRREAL' in advertencias or 'DOBLE' in advertencias:
-                viajes_omitidos += 1
-                continue
-            
             tracto = datos_viaje.get('tracto')
             
             if not tracto:
@@ -2407,8 +1971,6 @@ def construir_base_datos_desde_excels(datamon, datacas, dataayc, datagastos,
         print(f"\n[DB] Relaciones creadas: {relaciones_creadas}")
         print(f"[DB] Total relaciones: {len(db_manager.data['relaciones'])}")
         print(f"[DB] Viajes sin casetas: {viajes_sin_casetas}")
-        if viajes_omitidos > 0:
-            print(f"[DB] Viajes omitidos (IRREAL/DOBLE): {viajes_omitidos}")
         print(f"[DB] Tiempo: {tiempo_total:.2f}s")
     else:
         print("[DB] No hay viajes/casetas para crear relaciones")
@@ -2419,14 +1981,6 @@ def construir_base_datos_desde_excels(datamon, datacas, dataayc, datagastos,
     else:
         print("[DB] Saltando casetas fuera de viaje (no hay datos)")
     
-    # PASO 4.5: Detectar estados de análisis
-    if len(db_manager.data['viajes']) > 0 and len(db_manager.data['relaciones']) > 0:
-        detectar_estados_analisis(db_manager)
-
-    # PASO 4.6: Marcar viajes finales por tracto
-    if len(db_manager.data['viajes']) > 0:
-        marcar_viajes_finales(db_manager)
-
     # PASO 5: Enriquecer con datos de cierre
     if dataayc and dataayc != 0 and len(dataayc) > 0:
         print("[DB] Enriqueciendo viajes con datos de cierre...")
@@ -2437,7 +1991,7 @@ def construir_base_datos_desde_excels(datamon, datacas, dataayc, datagastos,
         print("[DB] Enriqueciendo viajes con datos de gastos...")
         db_manager.enriquecer_viajes_desde_gastos(datagastos)
         
-    # PASO 6.5: Verificar comisiones vs rutas
+        # PASO 6.5: Verificar comisiones vs rutas
     # Solo si hay rutas cargadas en la base de datos
     if len(db_manager.data.get('rutas', {})) > 0:
         verificar_comisiones_vs_rutas(db_manager)
@@ -2449,39 +2003,30 @@ def construir_base_datos_desde_excels(datamon, datacas, dataayc, datagastos,
     print("\n--- Base de datos construida exitosamente ---")
     return db_manager
 
+
 def agregar_casetas_fuera_db(db_manager, datacas, cas_header_rows=1):
     """
-    Identifica casetas que están fuera del rango de fechas de viajes.
-    OPTIMIZADO: Usa índices y saltos para evitar procesamiento innecesario.
-    MODIFICADO: Ignora viajes con estado IRREAL o DOBLE.
-    
-    Proceso:
-    1. Por cada tracto, obtener viajes válidos (sin IRREAL ni DOBLE) ordenados por fecha
-    2. Por cada caseta del tracto, verificar si cae fuera de todos los viajes
-    3. Crear relaciones is_fuera=True para casetas fuera de rango
-    
-    Retorna: cantidad de casetas fuera añadidas
+    Busca casetas entre viajes consecutivos del mismo tracto (optimizado).
+    Usa índices para búsqueda rápida.
     """
-    print("\n[DB] Buscando casetas fuera de viajes...")
+    if not datacas:
+        return 0
+    
     import time
     tiempo_inicio = time.time()
     
-    # Índices de columnas
-    cas_tracto_col = 8
-    cas_fecha_col = 9
-    cas_hora_col = 10
+    print("[DB] Procesando casetas fuera de viaje (optimizado)...")
     
-    # PASO 1: Agrupar viajes VÁLIDOS por tracto (FILTRAR IRREAL Y DOBLE)
+    # Construir índices si no existen
+    indices = IndicesCasetas()
+    indices.construir_desde_db(db_manager.data['casetas'])
+    
+    # Agrupar viajes por tracto y ordenar por fecha
     viajes_por_tracto = {}
     
     for id_viaje, datos_viaje in db_manager.data['viajes'].items():
         tracto = datos_viaje.get('tracto')
         if not tracto:
-            continue
-        
-        # NUEVO: Ignorar viajes con estado IRREAL o DOBLE
-        advertencias = datos_viaje.get('advertencias', [])
-        if 'IRREAL' in advertencias or 'DOBLE' in advertencias:
             continue
         
         try:
@@ -2499,106 +2044,56 @@ def agregar_casetas_fuera_db(db_manager, datacas, cas_header_rows=1):
             'fecha_final': fecha_final
         })
     
-    # Ordenar viajes por fecha_inicio para optimizar búsquedas
+    # Ordenar viajes de cada tracto por fecha
     for tracto in viajes_por_tracto:
-        viajes_por_tracto[tracto].sort(key=lambda v: v['fecha_inicio'])
+        viajes_por_tracto[tracto].sort(key=lambda x: x['fecha_inicio'])
     
-    # PASO 2: Obtener header de casetas
-    try:
-        cas_header = datacas[0]
-        cas_id_col = cas_header.index('ID_COMBINADO')
-    except (ValueError, IndexError):
-        print("[DB] No se encontró columna ID_COMBINADO en casetas")
-        return 0
+    casetas_fuera_agregadas = 0
     
-    # PASO 3: Procesar casetas
-    casetas_fuera_count = 0
-    total_casetas = len(datacas) - cas_header_rows
-    procesadas = 0
+    # Set de relaciones existentes para evitar duplicados
+    relaciones_existentes = set()
+    for rel in db_manager.data['relaciones']:
+        relaciones_existentes.add((rel['id_viaje'], rel['id_caseta']))
     
-    for cas_row in datacas[cas_header_rows:]:
-        procesadas += 1
-        if procesadas % max(1, total_casetas // 20) == 0 or procesadas == 1:
-            print(f"[PROGRESO] Casetas fuera: {procesadas}/{total_casetas}", end='\r', flush=True)
-        
-        id_caseta = cas_row[cas_id_col]
-        if pd.isna(id_caseta):
-            continue
-        
-        id_caseta = str(id_caseta).strip()
-        
-        # Verificar si ya tiene relación
-        tiene_relacion = any(
-            rel['id_caseta'] == id_caseta 
-            for rel in db_manager.data['relaciones']
-        )
-        
-        if tiene_relacion:
-            continue
-        
-        # Obtener datos de caseta
-        tracto = cas_row[cas_tracto_col] if cas_tracto_col < len(cas_row) else None
-        fecha = cas_row[cas_fecha_col] if cas_fecha_col < len(cas_row) else None
-        hora = cas_row[cas_hora_col] if cas_hora_col < len(cas_row) else None
-        
-        if not tracto or pd.isna(tracto):
-            continue
-        
-        tracto = str(tracto)
-        
-        # Parsear fecha/hora de caseta
-        fecha_dt = parse_datetime_caseta(fecha, hora)
-        if not fecha_dt:
-            continue
-        
-        # Verificar si el tracto tiene viajes VÁLIDOS
-        if tracto not in viajes_por_tracto:
-            continue
-        
-        viajes = viajes_por_tracto[tracto]
-        
-        # Verificar si está fuera de TODOS los viajes válidos
-        esta_fuera = True
-        
-        # Optimización: salir temprano si encontramos que está dentro
-        for viaje in viajes:
-            if viaje['fecha_inicio'] <= fecha_dt <= viaje['fecha_final']:
-                esta_fuera = False
-                break
+    # Procesar cada tracto
+    for tracto, viajes in viajes_por_tracto.items():
+        # Buscar huecos entre viajes consecutivos
+        for i in range(len(viajes) - 1):
+            viaje_actual = viajes[i]
+            viaje_siguiente = viajes[i + 1]
             
-            # Optimización: si la caseta es anterior al primer viaje, es fuera
-            if fecha_dt < viaje['fecha_inicio']:
-                break
-        
-        if esta_fuera:
-            # Encontrar el viaje más cercano para asignar
-            viaje_mas_cercano = None
-            menor_distancia = None
+            fecha_final_actual = viaje_actual['fecha_final']
+            fecha_inicio_siguiente = viaje_siguiente['fecha_inicio']
             
-            for viaje in viajes:
-                # Calcular distancia temporal
-                if fecha_dt < viaje['fecha_inicio']:
-                    distancia = (viaje['fecha_inicio'] - fecha_dt).total_seconds()
-                else:
-                    distancia = (fecha_dt - viaje['fecha_final']).total_seconds()
+            # Solo procesar si hay un hueco temporal
+            if fecha_final_actual >= fecha_inicio_siguiente:
+                continue
+            
+            # BÚSQUEDA OPTIMIZADA de casetas en el hueco
+            ids_casetas = indices.buscar_por_rango(
+                tracto, 
+                fecha_final_actual, 
+                fecha_inicio_siguiente
+            )
+            
+            for id_caseta in ids_casetas:
+                # Verificar que no esté ya relacionada
+                clave = (viaje_actual['id_viaje'], id_caseta)
                 
-                if menor_distancia is None or distancia < menor_distancia:
-                    menor_distancia = distancia
-                    viaje_mas_cercano = viaje['id_viaje']
-            
-            if viaje_mas_cercano:
-                db_manager.data['relaciones'].append({
-                    'id_viaje': viaje_mas_cercano,
-                    'id_caseta': id_caseta,
-                    'is_fuera': True
-                })
-                casetas_fuera_count += 1
+                if clave not in relaciones_existentes:
+                    db_manager.data['relaciones'].append({
+                        'id_viaje': viaje_actual['id_viaje'],
+                        'id_caseta': id_caseta,
+                        'is_fuera': True
+                    })
+                    relaciones_existentes.add(clave)
+                    casetas_fuera_agregadas += 1
     
     tiempo_total = time.time() - tiempo_inicio
-    print(f"\n[DB] Casetas fuera añadidas: {casetas_fuera_count}")
+    print(f"[DB] Casetas fuera agregadas: {casetas_fuera_agregadas}")
     print(f"[DB] Tiempo: {tiempo_total:.2f}s")
     
-    return casetas_fuera_count
+    return casetas_fuera_agregadas
 
 ##############################Funciones version 10 Filtros###################################################################################################
 ##############################Funciones version 10 Filtros###################################################################################################
@@ -4159,7 +3654,7 @@ def actualizar_datos_existentes(db_manager):
             print(f"  Eliminados por NAN: {datalenght - len(data)} registros")
             
             if dataayc is not None:
-                dataayc = DatabaseManager(dataayc, data, 4, 1)
+                dataayc = merge_excel_data(dataayc, data, 4, 1)
                 print("  Cierre actualizado\n")
             else:
                 dataayc = data
@@ -4237,16 +3732,6 @@ def detectar_tipo_excel(data):
     # Cierre: buscar "Reporte Apertura/Cierre Viajes"
     if any("Reporte Apertura/Cierre Viajes" in str(c) for row in data for c in row if c is not None):
         return 'cierre'
-    
-    celda_d1 = str(data[0][3]).strip().lower() if len(data[0]) > 3 else ""
-
-    # Nuevo monitoreo: "Reporte de monitoreo" en D1
-    if 'reporte de monitoreo' in celda_d1:
-        return ('monitoreo')
-    
-    # Nuevo apertura/cierre: "Reporte de apertura y cierre de viajes" en D1
-    if 'reporte de apertura y cierre de viajes' in celda_d1:
-        return ('cierre')
     
     return None
 
